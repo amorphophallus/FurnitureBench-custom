@@ -43,6 +43,7 @@ from furniture_bench.envs.observation import (
 )
 from furniture_bench.robot.robot_state import ROBOT_STATE_DIMS
 from furniture_bench.furniture.parts.part import Part
+import pprint
 
 
 ASSET_ROOT = str(Path(__file__).parent.parent.absolute() / "assets")
@@ -1374,14 +1375,28 @@ class FurnitureSimEnv(gym.Env):
             state: A dict containing the state of the environment.
         """
         self.furnitures[env_idx].reset()
-        dof_pos = np.concatenate(
-            [
-                state["robot_state"]["joint_positions"],
-                np.array([state["robot_state"]["gripper_width"] / 2] * 2),
-            ],
-        )
+        
+        # Robust extraction of robot_state components (handles list/np/tensor & extra dims)
+        robot_state = state["robot_state"]
+        jp = np.asarray(robot_state["joint_positions"]).reshape(-1).astype(np.float32)
+        gw_raw = np.asarray(robot_state["gripper_width"]).reshape(-1)
+        gw = float(gw_raw[0])  # single scalar
+        fingers = np.array([gw / 2.0, gw / 2.0], dtype=np.float32)
+        dof_pos = np.concatenate([jp, fingers]).astype(np.float32)
+
+        # Validate DoF length (Franka Panda 9 dof including fingers)
+        if dof_pos.shape[0] != self.franka_num_dofs:
+            print(f"[WARN] reset_env_to: dof_pos length {dof_pos.shape[0]} != expected {self.franka_num_dofs}; jp.shape={jp.shape}, gw={gw}")
+
+        # Parts poses (ensure flat array of length n_parts*7)
+        parts_poses = state["parts_poses"]
+        parts_poses_np = np.asarray(parts_poses).reshape(-1).astype(np.float32)
+        expected_parts_len = len(self.furnitures[env_idx].parts) * 7
+        if parts_poses_np.shape[0] != expected_parts_len:
+            print(f"[WARN] reset_env_to: parts_poses length {parts_poses_np.shape[0]} != expected {expected_parts_len}")
+
         self._reset_franka(env_idx, dof_pos)
-        self._reset_parts(env_idx, state["parts_poses"])
+        self._reset_parts(env_idx, parts_poses_np)
         self.env_steps[env_idx] = 0
         self.move_neutral = False
 
