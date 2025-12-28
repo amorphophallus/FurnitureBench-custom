@@ -1438,7 +1438,7 @@ class FurnitureSimEnv(gym.Env):
                         state["robot_state"]["gripper_finger_1_pos"],
                         state["robot_state"]["gripper_finger_2_pos"],
                     ]
-                ),
+                ).reshape(-1),
             ],
         )
         self._reset_franka(env_idx, dof_pos)

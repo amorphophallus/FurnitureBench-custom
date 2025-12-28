@@ -42,7 +42,7 @@ def remove_language_head(state_dict):
     return state_dict
 
 def load_r3m(modelid):
-    home = os.path.join(expanduser("~"), ".r3m")
+    home = "/data/hy/robust-rearrangement/models/r3m"  # hy 调整成我的 r3m 模型存放路径
     if modelid == "resnet50":
         foldername = "r3m_50"
         modelurl = 'https://drive.google.com/uc?id=1Xu0ssuG0N1zjZS54wmWzJ7-nb0-7XzbA'

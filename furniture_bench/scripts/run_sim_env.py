@@ -9,6 +9,8 @@ import gym
 import cv2
 import torch
 import numpy as np
+import sys
+import yaml
 
 
 def main():
@@ -87,9 +89,20 @@ def main():
         default=0,
         help="GPU device ID used for rendering.",
     )
+    parser.add_argument(
+        "--action_type",
+        type=str,
+        default="delta",
+        help="配合 replay_path 使用，指定动作类型"
+    )
 
     parser.add_argument("--num-envs", type=int, default=1)
     args = parser.parse_args()
+    print("[INFO] Running with the following arguments:")
+    print(yaml.dump(vars(args), default_flow_style=False))  # Print all arguments in YAML-like format
+    # Ensure all output is flushed immediately
+    sys.stdout.flush()
+    
 
     # Create FurnitureSim environment.
     env = gym.make(
@@ -106,6 +119,8 @@ def main():
         act_rot_repr=args.act_rot_repr,
         compute_device_id=args.compute_device_id,
         graphics_device_id=args.graphics_device_id,
+        ctrl_mode="diffik",
+        action_type=args.action_type,
     )
 
     # Initialize FurnitureSim.
@@ -143,6 +158,7 @@ def main():
         # Execute randomly sampled actions.
         import tqdm
 
+
         pbar = tqdm.tqdm()
         while True:
             ac = action_tensor(env.action_space.sample())
@@ -166,10 +182,30 @@ def main():
         # Replay the trajectory.
         with open(args.replay_path, "rb") as f:
             data = pickle.load(f)
-        env.reset_to([data["observations"][0]])  # reset to the first observation.
-        for ac in data["actions"]:
-            ac = action_tensor(ac)
-            ob, rew, done, _ = env.step(ac)
+        env.reset_to([data["observations"][10]])  # reset to the first observation.
+
+        if args.action_type == "delta":
+            for i, ac in enumerate(data["actions"]):
+                # ac[3:7] = [1, 0, 0, 0]  # Set quaternion to no rotation
+                # print(f"Step {i}: Action vector: {ac}")
+                ac = action_tensor(ac)
+                _, _, done, _ = env.step(ac)
+        elif args.action_type == "pos":
+            for i, obs in enumerate(data["observations"][1:]):
+                curr_pos = obs['robot_state']['ee_pos']
+                curr_quat = obs['robot_state']['ee_quat']
+                curr_gw = obs['robot_state']['gripper_width']
+                # Normalize gw from [0, 0.065] to [-1, 1]
+                curr_gw = -1 * (2 * (curr_gw / 0.065) - 1)
+                ac = np.concatenate([curr_pos, curr_quat, curr_gw], axis=0)
+                # print(f"Step {i}: Pos vector: {ac}")
+                ac = action_tensor(ac)
+                # 保证精确达到目标位置
+                for _ in range(1):
+                    _, _, done, _ = env.step(ac)
+                
+        else:
+            raise ValueError(f"Unsupported action_type: {args.action_type}")
     else:
         raise ValueError(f"No action specified")
 
