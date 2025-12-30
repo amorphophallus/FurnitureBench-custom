@@ -271,6 +271,12 @@ class FurnitureSimEnv(gym.Env):
         self.base_idxs = []
         self.part_idxs = {}
         self.franka_handles = []
+        
+        def _set_actor_bodies_seg_id(env, actor_handle, seg_id):
+            body_count = self.isaac_gym.get_actor_rigid_body_count(env, actor_handle)
+            for b in range(body_count):
+                self.isaac_gym.set_rigid_body_segmentation_id(env, actor_handle, b, seg_id)
+
         for i in range(self.num_envs):
             env = self.isaac_gym.create_env(self.sim, env_lower, env_upper, num_per_row)
             self.envs.append(env)
@@ -281,6 +287,7 @@ class FurnitureSimEnv(gym.Env):
             table_handle = self.isaac_gym.create_actor(
                 env, self.table_asset, table_pose, "table", i, 0
             )
+            _set_actor_bodies_seg_id(env, table_handle, 3)
             table_props = self.isaac_gym.get_actor_rigid_shape_properties(
                 env, table_handle
             )
@@ -298,12 +305,14 @@ class FurnitureSimEnv(gym.Env):
             base_tag_handle = self.isaac_gym.create_actor(
                 env, self.base_tag_asset, self.base_tag_pose, "base_tag", i, 0
             )
+            _set_actor_bodies_seg_id(env, base_tag_handle, 2)
             bg_pos = gymapi.Vec3(-0.8, 0, 0.75)
             bg_pose = gymapi.Transform()
             bg_pose.p = gymapi.Vec3(bg_pos.x, bg_pos.y, bg_pos.z)
             bg_handle = self.isaac_gym.create_actor(
                 env, self.background_asset, bg_pose, "background", i, 0
             )
+            _set_actor_bodies_seg_id(env, bg_handle, 1)
             # TODO: Make config
             obstacle_pose = gymapi.Transform()
             obstacle_pose.p = gymapi.Vec3(
@@ -316,6 +325,7 @@ class FurnitureSimEnv(gym.Env):
             obstacle_handle = self.isaac_gym.create_actor(
                 env, self.obstacle_front_asset, obstacle_pose, f"obstacle_front", i, 0
             )
+            _set_actor_bodies_seg_id(env, obstacle_handle, 4)
             part_idx = self.isaac_gym.get_actor_rigid_body_index(
                 env, obstacle_handle, 0, gymapi.DOMAIN_SIM
             )
@@ -339,6 +349,7 @@ class FurnitureSimEnv(gym.Env):
                 obstacle_handle = self.isaac_gym.create_actor(
                     env, self.obstacle_side_asset, obstacle_pose, name, i, 0
                 )
+                _set_actor_bodies_seg_id(env, obstacle_handle, 4)
                 part_idx = self.isaac_gym.get_actor_rigid_body_index(
                     env, obstacle_handle, 0, gymapi.DOMAIN_SIM
                 )
@@ -350,6 +361,7 @@ class FurnitureSimEnv(gym.Env):
             franka_handle = self.isaac_gym.create_actor(
                 env, self.franka_asset, self.franka_pose, "franka", i, 0
             )
+            _set_actor_bodies_seg_id(env, franka_handle, 5)
             self.franka_num_dofs = self.isaac_gym.get_actor_dof_count(
                 env, franka_handle
             )
@@ -430,6 +442,7 @@ class FurnitureSimEnv(gym.Env):
                 part_handle = self.isaac_gym.create_actor(
                     env, self.part_assets[part.name], part_pose, part.name, i, 0
                 )
+                _set_actor_bodies_seg_id(env, part_handle, 6 + part.part_idx)
                 self.handles[part.name] = part_handle
 
                 part_idx = self.isaac_gym.get_actor_rigid_body_index(

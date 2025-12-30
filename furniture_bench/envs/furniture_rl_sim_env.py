@@ -1692,6 +1692,35 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
     def __init__(self, randomness, randomize_obstacle=True, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        # Ensure segmentation IDs are set (mirrors FurnitureSimEnv create_envs) using rigid-body API
+        def _set_actor_bodies_seg_id(env, actor_handle, seg_id):
+            body_count = self.isaac_gym.get_actor_rigid_body_count(env, actor_handle)
+            for b in range(body_count):
+                self.isaac_gym.set_rigid_body_segmentation_id(env, actor_handle, b, seg_id)
+
+        for env_idx, env in enumerate(self.envs):
+            table_h = self.isaac_gym.find_actor_handle(env, "table")
+            _set_actor_bodies_seg_id(env, table_h, 3)
+
+            base_tag_h = self.isaac_gym.find_actor_handle(env, "base_tag")
+            _set_actor_bodies_seg_id(env, base_tag_h, 2)
+
+            bg_h = self.isaac_gym.find_actor_handle(env, "background")
+            _set_actor_bodies_seg_id(env, bg_h, 1)
+
+            for name in ["obstacle_front", "obstacle_right", "obstacle_left"]:
+                if self.isaac_gym.find_actor_index(env, name, gymapi.DOMAIN_ENV) != -1:
+                    h = self.isaac_gym.find_actor_handle(env, name)
+                    _set_actor_bodies_seg_id(env, h, 4)
+
+            franka_h = self.isaac_gym.find_actor_handle(env, "franka")
+            _set_actor_bodies_seg_id(env, franka_h, 5)
+
+            for part in self.furnitures[env_idx].parts:
+                h = self.isaac_gym.find_actor_handle(env, part.name)
+                _set_actor_bodies_seg_id(env, h, 6 + part.part_idx)
+
+
         self.randomness = str_to_enum(randomness)
 
         if self.randomness == Randomness.LOW:
