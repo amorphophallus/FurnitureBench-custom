@@ -1154,7 +1154,7 @@ class FurnitureSimEnv(gym.Env):
         self.ctrl_started = True
 
     def get_ee_pose(self):
-        """Gets end-effector pose in world coordinate."""
+        """Gets end-effector pose in robot coordinate."""
         hand_pos = self.rb_states[self.ee_idxs, :3]
         hand_quat = self.rb_states[self.ee_idxs, 3:7]
         base_pos = self.rb_states[self.base_idxs, :3]
