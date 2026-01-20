@@ -1094,7 +1094,7 @@ class FurnitureSimEnv(gym.Env):
             founds: (num_envs, num_parts). Always 1 since we don't use AprilTag for detection in simulation.
         """
 
-        parts_poses = self.rb_states[self.furniture_rb_indices, :7]
+        parts_poses = self.rb_states[self.furniture_rb_indices, :7].clone()
         if sim_coord:
             return parts_poses.reshape(self.num_envs, -1)
 
@@ -1108,7 +1108,7 @@ class FurnitureSimEnv(gym.Env):
         return parts_poses
 
     def get_obstacle_pose(self, sim_coord=False, robot_coord=False):
-        obstacle_front_poses = self.rb_states[self.obstacle_front_rb_indices, :7]
+        obstacle_front_poses = self.rb_states[self.obstacle_front_rb_indices, :7].clone()
 
         if sim_coord:
             return obstacle_front_poses.reshape(self.num_envs, -1)
@@ -1225,10 +1225,10 @@ class FurnitureSimEnv(gym.Env):
 
     def get_ee_pose(self):
         """Gets end-effector pose in world coordinate."""
-        hand_pos = self.rb_states[self.ee_idxs, :3]
-        hand_quat = self.rb_states[self.ee_idxs, 3:7]
-        base_pos = self.rb_states[self.base_idxs, :3]
-        base_quat = self.rb_states[self.base_idxs, 3:7]  # Align with world coordinate.
+        hand_pos = self.rb_states[self.ee_idxs, :3].clone()
+        hand_quat = self.rb_states[self.ee_idxs, 3:7].clone()
+        base_pos = self.rb_states[self.base_idxs, :3].clone()
+        base_quat = self.rb_states[self.base_idxs, 3:7].clone()  # Align with world coordinate.
         return hand_pos - base_pos, hand_quat
 
     def gripper_width(self):
@@ -2045,6 +2045,31 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
             newly_assembled_mask[:, i] = (
                 assembled_mask.any(dim=0) & ~self.already_assembled[:, i]
             )
+            
+            # --- Debugging weird rewards ---
+            if newly_assembled_mask[:, i].any():
+                env_trigger_idxs = torch.where(newly_assembled_mask[:, i])[0]
+                for e_idx in env_trigger_idxs:
+                    print(f"!!! Reward Triggered in Env {e_idx.item()} for Pair {pair} !!!")
+                    print(f"Step: {self.env_steps[e_idx].item()}")
+                    
+                    # Get the matched pose index
+                    matched_pose_idx = torch.where(assembled_mask[:, e_idx])[0]
+                    print(f"Matched Pose Index in assembled_rel_poses: {matched_pose_idx}")
+                    
+                    # Print current calculated relative pose
+                    curr_pos = rel_pose[e_idx, :3, 3]
+                    curr_rot = rel_pose[e_idx, :3, :3]
+                    print(f"Current Rel Pos: {curr_pos.tolist()}")
+                    
+                    # Print target pose(s) that were matched
+                    for p_idx in matched_pose_idx:
+                        target_pos = self.assembled_rel_poses[i, p_idx, :3, 3]
+                        pos_dist = torch.norm(curr_pos - target_pos)
+                        print(f"Target Pose {p_idx} Pos: {target_pos.tolist()}")
+                        print(f"Pos Distance: {pos_dist.item()}")
+                        print(f"Pos Threshold: {self.furniture.assembled_pos_threshold}")
+            # -------------------------------
 
             # Update the already_assembled tensor
             self.already_assembled[:, i] |= newly_assembled_mask[:, i]
