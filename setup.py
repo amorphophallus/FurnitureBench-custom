@@ -9,6 +9,8 @@ core_requirements = [
     #    "pynput",
     # "gym==0.21.0",
     "gym==0.22.0",
+    "grpcio",
+    "cloudpickle",
     "joblib",
     "numba",
     "pyrealsense2",
