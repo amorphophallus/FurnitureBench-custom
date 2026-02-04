@@ -1,5 +1,6 @@
 """简单的 gRPC bytes 序列化/反序列化工具。"""
 
+
 from __future__ import annotations
 
 import zlib
