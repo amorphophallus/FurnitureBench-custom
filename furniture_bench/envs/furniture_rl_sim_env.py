@@ -1253,6 +1253,10 @@ class FurnitureSimEnv(gym.Env):
         if self.channel_first:
             color_obs = color_obs.permute(0, 3, 1, 2)  # NHWC -> NCHW
         return color_obs
+    
+    def _get_depth_obs(self, depth_obs):
+        depth_obs = torch.stack(depth_obs)
+        return depth_obs
 
     def get_front_projection_view_matrix(self):
         cam_pos = self.front_cam_pos
@@ -1318,6 +1322,8 @@ class FurnitureSimEnv(gym.Env):
             self.isaac_gym.start_access_image_tensors(self.sim)
             obs["color_image1"] = self._get_color_obs(self.camera_obs["color_image1"])
             obs["color_image2"] = self._get_color_obs(self.camera_obs["color_image2"])
+            obs["depth_image1"] = self._get_depth_obs(self.camera_obs["depth_image1"]) if 'depth_image1' in self.camera_obs else None
+            obs["depth_image2"] = self._get_depth_obs(self.camera_obs["depth_image2"]) if 'depth_image2' in self.camera_obs else None
             self.isaac_gym.end_access_image_tensors(self.sim)
 
         if self.include_parts_poses:
