@@ -32,12 +32,41 @@ class TableTop(Part):
     def reset_skill_state(self):
         self.skill_state = "pick"
         self.skill_target = None
+        self.skill_guidance_point = None
         self.skill_pinched_steps = 0
 
     def get_skill_label(self):
         if self.skill_state == "done":
             return None
         return self.skill_state
+
+    def get_guidance_point(self):
+        return self.skill_guidance_point
+
+    def _compute_skill_pick_target(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        body_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        body_pose = sim_to_april_mat @ body_pose
+        body_pose = self._find_closest_y(body_pose)
+        device = ee_pose.device
+        rot = body_pose[:4, :4] @ torch.tensor(
+            rot_mat([np.pi / 2, 0, 0], hom=True), device=device
+        )
+        pos = body_pose[:3, 3]
+        pos = torch.concat([pos, torch.tensor([1.0], device=device)])
+        target_pos = (april_to_robot @ pos)[:3]
+        target_pos[2] = (april_to_robot @ body_pose)[2, 3]
+        target_ori = (april_to_robot @ rot)[:3, :3]
+        return C.to_homogeneous(target_pos, target_ori)
 
     def _compute_skill_push_target(
         self,
@@ -93,6 +122,14 @@ class TableTop(Part):
             grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
 
         if self.skill_state == "pick":
+            self.skill_target = self._compute_skill_pick_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+            )
+            self.skill_guidance_point = self.skill_target[:3, 3].clone()
             pinched = self.detect_opposing_fingertip_forces(
                 left_finger_force,
                 right_finger_force,
@@ -109,6 +146,7 @@ class TableTop(Part):
                     sim_to_april_mat,
                     april_to_robot,
                 )
+                self.skill_guidance_point = self.skill_target[:3, 3].clone()
         elif self.skill_state == "push":
             self.skill_target = self._compute_skill_push_target(
                 ee_pose,
@@ -117,6 +155,7 @@ class TableTop(Part):
                 sim_to_april_mat,
                 april_to_robot,
             )
+            self.skill_guidance_point = self.skill_target[:3, 3].clone()
             if self.satisfy(
                 ee_pose,
                 self.skill_target,

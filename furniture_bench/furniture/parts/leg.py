@@ -49,6 +49,7 @@ class Leg(Part):
     def reset_skill_state(self):
         self.skill_state = "pick"
         self.skill_target = None
+        self.skill_guidance_point = None
         self.skill_pinched_steps = 0
         self.skill_place_xy_threshold = 0.007
         self.skill_place_z_threshold = 0.02
@@ -58,6 +59,45 @@ class Leg(Part):
         if self.skill_state == "done":
             return None
         return self.skill_state
+
+    def get_guidance_point(self):
+        return self.skill_guidance_point
+
+    def _compute_skill_pick_target(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        leg_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        leg_pose = sim_to_april_mat @ leg_pose
+        leg_pose = self._find_down_z(leg_pose).clone().to(ee_pose.device)
+        pos = leg_pose[:4, 3]
+        target_pos = (april_to_robot @ pos)[:3]
+        target_pos[1] += 0.01
+        target_pos[0] += self.grasp_margin_x
+        target_pos[2] = (april_to_robot @ leg_pose)[2, 3]
+        return target_pos
+
+    def _compute_skill_screw_target(
+        self,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        leg_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        leg_pose = sim_to_april_mat @ leg_pose
+        leg_pose_robot = april_to_robot @ leg_pose
+        return leg_pose_robot[:3, 3].clone()
 
     def _find_leg_pose_x_look_front_skill(self, leg_pose, device):
         best_leg_pose = leg_pose.clone()
@@ -124,6 +164,7 @@ class Leg(Part):
         right_finger_pos,
         left_finger_force,
         right_finger_force,
+        part_force,
         assemble_to,
         assembled=False,
     ):
@@ -135,12 +176,23 @@ class Leg(Part):
             grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
 
         if self.skill_state == "pick":
-            pinched = self.detect_opposing_fingertip_forces(
-                left_finger_force,
-                right_finger_force,
-                grasp_axis,
-                table_normal=table_normal,
+            self.skill_guidance_point = self._compute_skill_pick_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
             )
+            pinched = False
+            if part_force is not None:
+                part_force = part_force.clone()
+                part_force = part_force - torch.dot(part_force, table_normal) * table_normal
+                leg_force_mag = torch.linalg.norm(part_force)
+                left_dist = torch.linalg.norm(left_finger_pos - rb_states[part_idxs[self.name]][0][:3])
+                right_dist = torch.linalg.norm(right_finger_pos - rb_states[part_idxs[self.name]][0][:3])
+                close_to_leg = left_dist < 0.04 and right_dist < 0.04
+                narrow_gripper = gripper_width < config["robot"]["max_gripper_width"]["square_table"] * 0.8
+                pinched = leg_force_mag > 1e-3 and close_to_leg and narrow_gripper
             self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
             if self.skill_pinched_steps >= 2:
                 self.skill_state = "place"
@@ -152,6 +204,7 @@ class Leg(Part):
                     april_to_robot,
                     assemble_to,
                 )
+                self.skill_guidance_point = self.skill_target[:3, 3].clone()
         elif self.skill_state == "place":
             self.skill_target = self._compute_skill_place_target(
                 ee_pose,
@@ -161,6 +214,7 @@ class Leg(Part):
                 april_to_robot,
                 assemble_to,
             )
+            self.skill_guidance_point = self.skill_target[:3, 3].clone()
             xy_error = (
                 ee_pose[:2, 3] - self.skill_target[:2, 3]
             ).abs().sum()
@@ -173,10 +227,25 @@ class Leg(Part):
             ):
                 self.skill_state = "insert"
         elif self.skill_state == "insert":
+            if self.skill_target is not None:
+                self.skill_guidance_point = self.skill_target[:3, 3].clone()
             if gripper_width >= config["robot"]["max_gripper_width"]["square_table"] - 0.001:
                 self.skill_state = "screw"
-        elif self.skill_state == "screw" and assembled:
-            self.skill_state = "done"
+                self.skill_guidance_point = self._compute_skill_screw_target(
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                )
+        elif self.skill_state == "screw":
+            self.skill_guidance_point = self._compute_skill_screw_target(
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+            )
+            if assembled:
+                self.skill_state = "done"
 
         return self.skill_state
 

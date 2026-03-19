@@ -1184,6 +1184,11 @@ class FurnitureSimEnv(gym.Env):
     def get_skill_annotation_inputs(self, env_idx=0):
         ee_pos, ee_quat = self.get_ee_pose()
         gripper_width = self.gripper_width()
+        part_contact_forces = {
+            name: self.net_contact_forces[part_idxs[env_idx]].clone()
+            for name, part_idxs in self.part_idxs.items()
+            if len(part_idxs) > env_idx
+        }
         return {
             "ee_pos": ee_pos[env_idx],
             "ee_quat": ee_quat[env_idx],
@@ -1196,6 +1201,7 @@ class FurnitureSimEnv(gym.Env):
             "right_finger_pos": self.rb_states[self.right_finger_idxs[env_idx], :3],
             "left_finger_force": self.net_contact_forces[self.left_finger_idxs[env_idx]],
             "right_finger_force": self.net_contact_forces[self.right_finger_idxs[env_idx]],
+            "part_contact_forces": part_contact_forces,
             "left_finger_idx": self.left_finger_idxs[env_idx],
             "right_finger_idx": self.right_finger_idxs[env_idx],
             "current_assemble_idx": 0,

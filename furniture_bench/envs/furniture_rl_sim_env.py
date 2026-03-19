@@ -646,6 +646,9 @@ class FurnitureSimEnv(gym.Env):
     def set_camera(self):
         self.camera_handles = {}
         self.camera_obs = {}
+        self.camera_cfgs = {}
+        self.wrist_cam_offset_pos = np.array([-0.04, 0.0, -0.05], dtype=np.float32)
+        self.wrist_cam_offset_euler = np.array([0.0, np.radians(-70.0), 0.0], dtype=np.float32)
 
         def create_camera(name, i):
             env = self.envs[i]
@@ -663,9 +666,9 @@ class FurnitureSimEnv(gym.Env):
                     camera_cfg.horizontal_fov = 55.0  # Wide view.
                 camera = self.isaac_gym.create_camera_sensor(env, camera_cfg)
                 transform = gymapi.Transform()
-                transform.p = gymapi.Vec3(-0.04, 0, -0.05)
+                transform.p = gymapi.Vec3(*self.wrist_cam_offset_pos.tolist())
                 transform.r = gymapi.Quat.from_axis_angle(
-                    gymapi.Vec3(0, 1, 0), np.radians(-70.0)
+                    gymapi.Vec3(0, 1, 0), self.wrist_cam_offset_euler[1]
                 )
                 self.isaac_gym.attach_camera_to_body(
                     camera, env, self.ee_handles[i], transform, gymapi.FOLLOW_TRANSFORM
@@ -689,6 +692,13 @@ class FurnitureSimEnv(gym.Env):
                     gymapi.Vec3(0, 1, 0), np.radians(35.0)
                 )
                 self.isaac_gym.set_camera_transform(camera, env, transform)
+            self.camera_cfgs[name] = {
+                "width": camera_cfg.width,
+                "height": camera_cfg.height,
+                "near_plane": camera_cfg.near_plane,
+                "far_plane": camera_cfg.far_plane,
+                "horizontal_fov": camera_cfg.horizontal_fov,
+            }
             return camera
 
         camera_names = {"1": "wrist", "2": "front"}
@@ -1256,9 +1266,17 @@ class FurnitureSimEnv(gym.Env):
     def get_skill_annotation_inputs(self, env_idx=0):
         ee_pos, ee_quat = self.get_ee_pose()
         gripper_width = self.gripper_width()
+        part_contact_forces = {
+            name: self.net_contact_forces[part_idxs[env_idx]].clone()
+            for name, part_idxs in self.part_idxs.items()
+            if len(part_idxs) > env_idx
+        }
         return {
             "ee_pos": ee_pos[env_idx],
             "ee_quat": ee_quat[env_idx],
+            "ee_pos_sim": self.rb_states[self.ee_idxs[env_idx], :3].clone(),
+            "ee_quat_sim": self.rb_states[self.ee_idxs[env_idx], 3:7].clone(),
+            "base_pos": self.rb_states[self.base_idxs[env_idx], :3].clone(),
             "gripper_width": gripper_width[env_idx],
             "rb_states": self.rb_states,
             "part_idxs": self.part_idxs,
@@ -1268,8 +1286,14 @@ class FurnitureSimEnv(gym.Env):
             "right_finger_pos": self.rb_states[self.right_finger_idxs[env_idx], :3],
             "left_finger_force": self.net_contact_forces[self.left_finger_idxs[env_idx]],
             "right_finger_force": self.net_contact_forces[self.right_finger_idxs[env_idx]],
+            "part_contact_forces": part_contact_forces,
             "left_finger_idx": self.left_finger_idxs[env_idx],
             "right_finger_idx": self.right_finger_idxs[env_idx],
+            "camera_cfgs": self.camera_cfgs,
+            "front_cam_pos": self.front_cam_pos,
+            "front_cam_target": self.front_cam_target,
+            "wrist_cam_offset_pos": self.wrist_cam_offset_pos,
+            "wrist_cam_offset_euler": self.wrist_cam_offset_euler,
             "current_assemble_idx": 0,
         }
 
