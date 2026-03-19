@@ -293,6 +293,8 @@ class FurnitureSimEnv(gym.Env):
         franka_link_dict = self.isaac_gym.get_asset_rigid_body_dict(self.franka_asset)
         self.franka_ee_index = franka_link_dict["k_ee_link"]
         self.franka_base_index = franka_link_dict["panda_link0"]
+        self.franka_left_finger_index = franka_link_dict["panda_leftfinger"]
+        self.franka_right_finger_index = franka_link_dict["panda_rightfinger"]
 
         # Create envs.
         num_per_row = int(np.sqrt(self.num_envs))
@@ -338,6 +340,8 @@ class FurnitureSimEnv(gym.Env):
         self.obstacle_left_pose.r = self.obstacle_front_pose.r
 
         self.base_idxs = []
+        self.left_finger_idxs = []
+        self.right_finger_idxs = []
         self.part_idxs = defaultdict(list)
         self.franka_handles = []
         for i in range(self.num_envs):
@@ -417,6 +421,16 @@ class FurnitureSimEnv(gym.Env):
             self.base_idxs.append(
                 self.isaac_gym.get_actor_rigid_body_index(
                     env, franka_handle, self.franka_base_index, gymapi.DOMAIN_SIM
+                )
+            )
+            self.left_finger_idxs.append(
+                self.isaac_gym.get_actor_rigid_body_index(
+                    env, franka_handle, self.franka_left_finger_index, gymapi.DOMAIN_SIM
+                )
+            )
+            self.right_finger_idxs.append(
+                self.isaac_gym.get_actor_rigid_body_index(
+                    env, franka_handle, self.franka_right_finger_index, gymapi.DOMAIN_SIM
                 )
             )
             # Set dof properties.
@@ -718,6 +732,8 @@ class FurnitureSimEnv(gym.Env):
         # Get rigid body state tensor
         _rb_states = self.isaac_gym.acquire_rigid_body_state_tensor(self.sim)
         self.rb_states: torch.Tensor = gymtorch.wrap_tensor(_rb_states)
+        _net_cf = self.isaac_gym.acquire_net_contact_force_tensor(self.sim)
+        self.net_contact_forces: torch.Tensor = gymtorch.wrap_tensor(_net_cf)
 
         _root_tensor = self.isaac_gym.acquire_actor_root_state_tensor(self.sim)
         self.root_tensor = gymtorch.wrap_tensor(_root_tensor)
@@ -1004,6 +1020,7 @@ class FurnitureSimEnv(gym.Env):
         self.isaac_gym.refresh_dof_state_tensor(self.sim)
         self.isaac_gym.refresh_dof_force_tensor(self.sim)
         self.isaac_gym.refresh_rigid_body_state_tensor(self.sim)
+        self.isaac_gym.refresh_net_contact_force_tensor(self.sim)
         self.isaac_gym.refresh_jacobian_tensors(self.sim)
 
         # Update viewer
@@ -1072,6 +1089,7 @@ class FurnitureSimEnv(gym.Env):
         self.isaac_gym.refresh_dof_state_tensor(self.sim)
         self.isaac_gym.refresh_dof_force_tensor(self.sim)
         self.isaac_gym.refresh_rigid_body_state_tensor(self.sim)
+        self.isaac_gym.refresh_net_contact_force_tensor(self.sim)
         self.isaac_gym.refresh_jacobian_tensors(self.sim)
 
         # Update viewer
@@ -1209,6 +1227,7 @@ class FurnitureSimEnv(gym.Env):
         self.isaac_gym.refresh_dof_state_tensor(self.sim)
         self.isaac_gym.refresh_dof_force_tensor(self.sim)
         self.isaac_gym.refresh_rigid_body_state_tensor(self.sim)
+        self.isaac_gym.refresh_net_contact_force_tensor(self.sim)
         self.isaac_gym.refresh_jacobian_tensors(self.sim)
 
         if self.render_cameras:
@@ -1233,6 +1252,26 @@ class FurnitureSimEnv(gym.Env):
 
     def gripper_width(self):
         return self.dof_pos[:, 7:8] + self.dof_pos[:, 8:9]
+
+    def get_skill_annotation_inputs(self, env_idx=0):
+        ee_pos, ee_quat = self.get_ee_pose()
+        gripper_width = self.gripper_width()
+        return {
+            "ee_pos": ee_pos[env_idx],
+            "ee_quat": ee_quat[env_idx],
+            "gripper_width": gripper_width[env_idx],
+            "rb_states": self.rb_states,
+            "part_idxs": self.part_idxs,
+            "sim_to_april_mat": self.sim_to_april_mat,
+            "april_to_robot_mat": self.april_to_robot_mat,
+            "left_finger_pos": self.rb_states[self.left_finger_idxs[env_idx], :3],
+            "right_finger_pos": self.rb_states[self.right_finger_idxs[env_idx], :3],
+            "left_finger_force": self.net_contact_forces[self.left_finger_idxs[env_idx]],
+            "right_finger_force": self.net_contact_forces[self.right_finger_idxs[env_idx]],
+            "left_finger_idx": self.left_finger_idxs[env_idx],
+            "right_finger_idx": self.right_finger_idxs[env_idx],
+            "current_assemble_idx": 0,
+        }
 
     def _done(self) -> torch.Tensor:
         dones = torch.zeros((self.num_envs, 1), dtype=torch.bool, device=self.device)

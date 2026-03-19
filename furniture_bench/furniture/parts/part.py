@@ -294,3 +294,34 @@ class Part(ABC):
 
     def state_no_noise(self):
         return False
+
+    def detect_opposing_fingertip_forces(
+        self,
+        left_force,
+        right_force,
+        grasp_axis,
+        table_normal=None,
+        force_threshold=1e-3,
+        projection_threshold=1e-4,
+    ):
+        grasp_axis = grasp_axis / (torch.linalg.norm(grasp_axis) + 1e-8)
+
+        left_force = left_force.clone()
+        right_force = right_force.clone()
+        if table_normal is not None:
+            table_normal = table_normal / (torch.linalg.norm(table_normal) + 1e-8)
+            left_force = left_force - torch.dot(left_force, table_normal) * table_normal
+            right_force = right_force - torch.dot(right_force, table_normal) * table_normal
+
+        if torch.linalg.norm(left_force) < force_threshold:
+            return False
+        if torch.linalg.norm(right_force) < force_threshold:
+            return False
+
+        left_proj = torch.dot(left_force, grasp_axis)
+        right_proj = torch.dot(right_force, grasp_axis)
+        return (
+            abs(left_proj) > projection_threshold
+            and abs(right_proj) > projection_threshold
+            and left_proj * right_proj < 0
+        )

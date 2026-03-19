@@ -27,6 +27,105 @@ class TableTop(Part):
         self.pre_assemble_done = False
         self._state = "reach_body_grasp_xy"
         self.gripper_action = -1
+        self.reset_skill_state()
+
+    def reset_skill_state(self):
+        self.skill_state = "pick"
+        self.skill_target = None
+        self.skill_pinched_steps = 0
+
+    def get_skill_label(self):
+        if self.skill_state == "done":
+            return None
+        return self.skill_state
+
+    def _compute_skill_push_target(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        device = ee_pose.device
+        target_pos = torch.zeros((4,), device=device)
+        target_pos[-1] = 1
+        for name in ["obstacle_front", "obstacle_right", "obstacle_left"]:
+            obstacle_pos = torch.cat(
+                [
+                    rb_states[part_idxs[name]][0][:3],
+                    torch.tensor([1.0], device=device),
+                ]
+            )
+            target_pos[0] = max(obstacle_pos[0], target_pos[0])
+            target_pos[1] = max(obstacle_pos[1], target_pos[1])
+        target_pos = april_to_robot @ sim_to_april_mat @ target_pos
+        target_pos[0] -= self.half_width * 2
+        target_pos[1] -= self.half_width
+        target_pos[2] = ee_pose[2, 3]
+        target_pos = target_pos[:3]
+
+        target_ori = torch.zeros((3, 3), device=device)
+        target_ori[0][1] = 1
+        target_ori[1][0] = 1
+        target_ori[2][2] = -1
+        return C.to_homogeneous(target_pos, target_ori)
+
+    def update_skill_state(
+        self,
+        ee_pos,
+        ee_quat,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        left_finger_pos,
+        right_finger_pos,
+        left_finger_force,
+        right_finger_force,
+    ):
+        ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
+        table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
+        grasp_axis = right_finger_pos - left_finger_pos
+        grasp_axis[2] = 0.0
+
+        if torch.linalg.norm(grasp_axis) < 1e-6:
+            grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
+
+        if self.skill_state == "pick":
+            pinched = self.detect_opposing_fingertip_forces(
+                left_finger_force,
+                right_finger_force,
+                grasp_axis,
+                table_normal=table_normal,
+            )
+            self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
+            if self.skill_pinched_steps >= 2:
+                self.skill_state = "push"
+                self.skill_target = self._compute_skill_push_target(
+                    ee_pose,
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                )
+        elif self.skill_state == "push":
+            self.skill_target = self._compute_skill_push_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+            )
+            if self.satisfy(
+                ee_pose,
+                self.skill_target,
+                pos_error_threshold=0.05,
+                ori_error_threshold=1,  # 对orientation要求不高，因为push过程中可能会有较大旋转
+            ):
+                self.skill_state = "done"
+
+        return self.skill_state
 
     def is_in_reset_ori(self, pose, from_skill, ori_bound):
         reset_ori = (

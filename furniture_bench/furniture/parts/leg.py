@@ -44,6 +44,141 @@ class Leg(Part):
         self.prev_pose = None
         self._state = "reach_leg_floor_xy"
         self.gripper_action = -1
+        self.reset_skill_state()
+
+    def reset_skill_state(self):
+        self.skill_state = "pick"
+        self.skill_target = None
+        self.skill_pinched_steps = 0
+        self.skill_place_xy_threshold = 0.007
+        self.skill_place_z_threshold = 0.02
+        self.skill_place_ori_threshold = 0.5
+
+    def get_skill_label(self):
+        if self.skill_state == "done":
+            return None
+        return self.skill_state
+
+    def _find_leg_pose_x_look_front_skill(self, leg_pose, device):
+        best_leg_pose = leg_pose.clone()
+        tmp_leg_pose = leg_pose
+        rot = torch.tensor(rot_mat([0, -np.pi / 2, 0], hom=True), device=device).float()
+        for _ in range(3):
+            tmp_leg_pose = tmp_leg_pose @ rot
+            if best_leg_pose[0, 0] < tmp_leg_pose[0, 0]:
+                best_leg_pose = tmp_leg_pose
+        return best_leg_pose
+
+    def _compute_skill_place_target(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        assemble_to,
+    ):
+        device = ee_pose.device
+        table_pose = C.to_homogeneous(
+            rb_states[part_idxs[assemble_to]][0][:3],
+            C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
+        )
+        leg_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        table_pose = sim_to_april_mat @ table_pose
+        leg_pose = sim_to_april_mat @ leg_pose
+        leg_pose_robot = april_to_robot @ leg_pose
+        leg_pose_robot = self._find_leg_pose_x_look_front_skill(leg_pose_robot, device)
+        table_hole_pose_robot = (
+            april_to_robot
+            @ table_pose
+            @ torch.tensor(
+                get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
+                device=device,
+            )
+        )
+        target_leg_pose_robot = torch.tensor(
+            [
+                [1.0, 0.0, 0.0, table_hole_pose_robot[0, 3]],
+                [0.0, 0.0, -1.0, table_hole_pose_robot[1, 3]],
+                [0.0, 1.0, 0.0, table_pose[2, 3] + 0.09],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            device=device,
+        )
+        rel = target_leg_pose_robot @ torch.linalg.inv(leg_pose_robot)
+        return rel @ ee_pose
+
+    def update_skill_state(
+        self,
+        ee_pos,
+        ee_quat,
+        gripper_width,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        left_finger_pos,
+        right_finger_pos,
+        left_finger_force,
+        right_finger_force,
+        assemble_to,
+        assembled=False,
+    ):
+        ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
+        table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
+        grasp_axis = right_finger_pos - left_finger_pos
+        grasp_axis[2] = 0.0
+        if torch.linalg.norm(grasp_axis) < 1e-6:
+            grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
+
+        if self.skill_state == "pick":
+            pinched = self.detect_opposing_fingertip_forces(
+                left_finger_force,
+                right_finger_force,
+                grasp_axis,
+                table_normal=table_normal,
+            )
+            self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
+            if self.skill_pinched_steps >= 2:
+                self.skill_state = "place"
+                self.skill_target = self._compute_skill_place_target(
+                    ee_pose,
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                    assemble_to,
+                )
+        elif self.skill_state == "place":
+            self.skill_target = self._compute_skill_place_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
+            xy_error = (
+                ee_pose[:2, 3] - self.skill_target[:2, 3]
+            ).abs().sum()
+            z_error = (ee_pose[2, 3] - self.skill_target[2, 3]).abs()
+            ori_error = (self.skill_target[:3, :3] - ee_pose[:3, :3]).abs().sum()
+            if (
+                xy_error < self.skill_place_xy_threshold
+                and z_error < self.skill_place_z_threshold
+                and ori_error < self.skill_place_ori_threshold
+            ):
+                self.skill_state = "insert"
+        elif self.skill_state == "insert":
+            if gripper_width >= config["robot"]["max_gripper_width"]["square_table"] - 0.001:
+                self.skill_state = "screw"
+        elif self.skill_state == "screw" and assembled:
+            self.skill_state = "done"
+
+        return self.skill_state
 
     def is_in_reset_ori(
         self, pose: npt.NDArray[np.float32], from_skill, ori_bound
