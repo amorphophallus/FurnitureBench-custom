@@ -45,6 +45,7 @@ class RoundTableTop(Part):
             "push",
             "go_up",
         ]  # Specificy next state after skill is complete.
+        self.reset_skill_state()
 
     def is_in_reset_ori(self, pose, from_skill, ori_bound):
         return pose[2, 2] < -ori_bound
@@ -61,6 +62,121 @@ class RoundTableTop(Part):
         self.pre_assemble_done = False
         self._state = "reach_top_grasp_xy"
         self.gripper_action = -1
+        self.reset_skill_state()
+
+    def reset_skill_state(self):
+        self.skill_state = "push"
+        self.skill_target = None
+        self.skill_guidance_point = None
+
+    def get_skill_label(self):
+        if self.skill_state == "done":
+            return None
+        return self.skill_state
+
+    def get_guidance_point(self):
+        return self.skill_guidance_point
+
+    def _compute_skill_push_target(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        device = ee_pose.device
+        target_pos = torch.zeros((4,), device=device)
+        target_pos[-1] = 1
+        for name in ["obstacle_front", "obstacle_right", "obstacle_left"]:
+            obstacle_pos = torch.cat(
+                [
+                    rb_states[part_idxs[name]][0][:3],
+                    torch.tensor([1.0], device=device),
+                ]
+            )
+            target_pos[0] = max(obstacle_pos[0], target_pos[0])
+            target_pos[1] = max(obstacle_pos[1], target_pos[1])
+        target_pos = april_to_robot @ sim_to_april_mat @ target_pos
+        target_pos[0] -= self.radius
+        target_pos[1] -= self.radius
+        target_pos[2] = ee_pose[2, 3]
+        target_pos = target_pos[:3]
+        target_ori = ee_pose[:3, :3]
+        return C.to_homogeneous(target_pos, target_ori)
+
+    def _compute_skill_push_guidance_point(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        top_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        top_pose = sim_to_april_mat @ top_pose
+        target = self._compute_skill_push_target(
+            ee_pose,
+            rb_states,
+            part_idxs,
+            sim_to_april_mat,
+            april_to_robot,
+        )
+        guidance_point = (april_to_robot @ top_pose)[:3, 3].clone()
+        guidance_point[:2] = target[:2, 3]
+        return guidance_point
+
+    def update_skill_state(
+        self,
+        ee_pos,
+        ee_quat,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        left_finger_pos,
+        right_finger_pos,
+        left_finger_force,
+        right_finger_force,
+    ):
+        ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
+        if self.skill_state == "push":
+            self.skill_target = self._compute_skill_push_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+            )
+            self.skill_guidance_point = self._compute_skill_push_guidance_point(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+            )
+            top_pose = C.to_homogeneous(
+                rb_states[part_idxs[self.name]][0][:3],
+                C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+            )
+            top_pose = sim_to_april_mat @ top_pose
+            top_pos_robot = (april_to_robot @ top_pose)[:3, 3]
+            pos_error = (top_pos_robot - self.skill_guidance_point).abs().sum()
+            print(
+                "[round_table_top push_debug] "
+                f"top_pos={top_pos_robot.tolist()} "
+                f"guidance_point={self.skill_guidance_point.tolist()} "
+                f"pos_error={pos_error.item():.6f} "
+                "pos_thresh=0.015000 "
+                f"push_ok={bool(pos_error < 0.05)}"
+            )
+            if pos_error < 0.05:
+                self.skill_state = "done"
+
+        return self.skill_state
 
     def pre_assemble(
         self,

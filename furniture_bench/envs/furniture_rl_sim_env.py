@@ -1271,6 +1271,24 @@ class FurnitureSimEnv(gym.Env):
             for name, part_idxs in self.part_idxs.items()
             if len(part_idxs) > env_idx
         }
+        assembled_mask = None
+        current_assemble_idx = 0
+        if hasattr(self, "already_assembled"):
+            assembled_mask = self.already_assembled[env_idx].clone()
+            false_indices = torch.where(~assembled_mask)[0]
+            current_assemble_idx = (
+                int(false_indices[0].item())
+                if false_indices.numel() > 0
+                else len(self.pairs_to_assemble)
+            )
+        # if getattr(self, "furniture_name", None) == "round_table":
+        #     print(
+        #         "[env annotation_debug] "
+        #         f"env={env_idx} "
+        #         f"assembled_mask="
+        #         f"{assembled_mask.tolist() if assembled_mask is not None else None} "
+        #         f"current_assemble_idx={current_assemble_idx}"
+        #     )
         return {
             "ee_pos": ee_pos[env_idx],
             "ee_quat": ee_quat[env_idx],
@@ -1294,7 +1312,8 @@ class FurnitureSimEnv(gym.Env):
             "front_cam_target": self.front_cam_target,
             "wrist_cam_offset_pos": self.wrist_cam_offset_pos,
             "wrist_cam_offset_euler": self.wrist_cam_offset_euler,
-            "current_assemble_idx": 0,
+            "assembled_mask": assembled_mask,
+            "current_assemble_idx": current_assemble_idx,
         }
 
     def _done(self) -> torch.Tensor:
@@ -2130,36 +2149,37 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
                 & ~self.already_assembled[:, i]
             )
 
-            if self.furniture_name == "round_table":
-                part1_name = self.furniture.parts[pair[0]].name
-                part2_name = self.furniture.parts[pair[1]].name
-                matched_pose_idx_per_env = torch.argmax(assembled_mask.int(), dim=0)
-                for e_idx in range(self.num_envs):
-                    matched_idx = matched_pose_idx_per_env[e_idx]
-                    target_z = self.assembled_rel_poses[i, matched_idx, 2, 3]
-                    target_pos = self.assembled_rel_poses[i, matched_idx, :3, 3]
-                    curr_pos = rel_pose[e_idx, :3, 3]
-                    abs_pos_diff = (curr_pos - target_pos).abs()
-                    curr_z = rel_pose[e_idx, 2, 3]
-                    abs_dz = (curr_z - target_z).abs()
-                    if similar_rot.ndim == 1:
-                        env_similar_rot = bool(similar_rot[e_idx].item())
-                    else:
-                        env_similar_rot = bool(similar_rot[matched_idx, e_idx].item())
-                    env_similar_pos = bool(similar_pos[matched_idx, e_idx].item())
-                    env_assembled_now = bool(assembled_now[e_idx].item())
-                    print(
-                        "[round_table assembly_debug] "
-                        f"env={e_idx} pair=({part1_name},{part2_name}) "
-                        f"step={self.env_steps[e_idx].item()} "
-                        f"abs_diff_xyz={abs_pos_diff.tolist()} "
-                        f"abs_dz={abs_dz.item():.6f} "
-                        f"z_thresh={self.furniture.assembled_pos_threshold[2]:.6f} "
-                        f"similar_rot={env_similar_rot} "
-                        f"similar_pos={env_similar_pos} "
-                        f"assembled_now={env_assembled_now} "
-                        f"consecutive={self.consecutive_assembled_steps[e_idx, i].item()}"
-                    )
+            # debug round_table
+            # if self.furniture_name == "round_table":
+            #     part1_name = self.furniture.parts[pair[0]].name
+            #     part2_name = self.furniture.parts[pair[1]].name
+            #     matched_pose_idx_per_env = torch.argmax(assembled_mask.int(), dim=0)
+            #     for e_idx in range(self.num_envs):
+            #         matched_idx = matched_pose_idx_per_env[e_idx]
+            #         target_z = self.assembled_rel_poses[i, matched_idx, 2, 3]
+            #         target_pos = self.assembled_rel_poses[i, matched_idx, :3, 3]
+            #         curr_pos = rel_pose[e_idx, :3, 3]
+            #         abs_pos_diff = (curr_pos - target_pos).abs()
+            #         curr_z = rel_pose[e_idx, 2, 3]
+            #         abs_dz = (curr_z - target_z).abs()
+            #         if similar_rot.ndim == 1:
+            #             env_similar_rot = bool(similar_rot[e_idx].item())
+            #         else:
+            #             env_similar_rot = bool(similar_rot[matched_idx, e_idx].item())
+            #         env_similar_pos = bool(similar_pos[matched_idx, e_idx].item())
+            #         env_assembled_now = bool(assembled_now[e_idx].item())
+            #         print(
+            #             "[round_table assembly_debug] "
+            #             f"env={e_idx} pair=({part1_name},{part2_name}) "
+            #             f"step={self.env_steps[e_idx].item()} "
+            #             f"abs_diff_xyz={abs_pos_diff.tolist()} "
+            #             f"abs_dz={abs_dz.item():.6f} "
+            #             f"z_thresh={self.furniture.assembled_pos_threshold[2]:.6f} "
+            #             f"similar_rot={env_similar_rot} "
+            #             f"similar_pos={env_similar_pos} "
+            #             f"assembled_now={env_assembled_now} "
+            #             f"consecutive={self.consecutive_assembled_steps[e_idx, i].item()}"
+            #         )
             
             # --- Debugging weird rewards ---
             if newly_assembled_mask[:, i].any():

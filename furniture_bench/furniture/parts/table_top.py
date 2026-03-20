@@ -104,6 +104,7 @@ class TableTop(Part):
         self,
         ee_pos,
         ee_quat,
+        gripper_width,
         rb_states,
         part_idxs,
         sim_to_april_mat,
@@ -112,6 +113,7 @@ class TableTop(Part):
         right_finger_pos,
         left_finger_force,
         right_finger_force,
+        part_force=None,
     ):
         ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
         table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
@@ -130,12 +132,39 @@ class TableTop(Part):
                 april_to_robot,
             )
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
-            pinched = self.detect_opposing_fingertip_forces(
-                left_finger_force,
-                right_finger_force,
-                grasp_axis,
-                table_normal=table_normal,
+            pinched = False
+            body_force_mag = None
+            left_dist = None
+            right_dist = None
+            close_to_target = False
+            narrow_gripper = (
+                gripper_width
+                < config["robot"]["max_gripper_width"]["square_table"] * 0.8
             )
+            if part_force is not None:
+                part_force = part_force.clone()
+                part_force = part_force - torch.dot(part_force, table_normal) * table_normal
+                body_force_mag = torch.linalg.norm(part_force)
+                body_pos = rb_states[part_idxs[self.name]][0][:3]
+                left_dist = torch.linalg.norm(left_finger_pos - body_pos)
+                right_dist = torch.linalg.norm(right_finger_pos - body_pos)
+                close_to_target = left_dist < 0.15 and right_dist < 0.15
+                pinched = body_force_mag > 1e-3 and close_to_target and narrow_gripper
+            # print(
+            #     "[table_top pick_debug] "
+            #     f"force_mag={(body_force_mag.item() if body_force_mag is not None else None)} "
+            #     "force_thresh=0.001 "
+            #     f"force_ok={(body_force_mag is not None and body_force_mag.item() > 1e-3)} "
+            #     f"left_dist={(left_dist.item() if left_dist is not None else None)} "
+            #     f"right_dist={(right_dist.item() if right_dist is not None else None)} "
+            #     "dist_thresh=0.15 "
+            #     f"close_ok={close_to_target} "
+            #     f"gripper_width={gripper_width.item():.6f} "
+            #     f"gripper_thresh={(config['robot']['max_gripper_width']['square_table'] * 0.8):.6f} "
+            #     f"gripper_ok={bool(narrow_gripper.item())} "
+            #     f"pinched={pinched} "
+            #     f"pinched_steps={self.skill_pinched_steps}"
+            # )
             self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
             if self.skill_pinched_steps >= 2:
                 self.skill_state = "push"

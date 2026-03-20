@@ -63,6 +63,24 @@ class Leg(Part):
     def get_guidance_point(self):
         return self.skill_guidance_point
 
+    def _ori_error_no_yaw(self, current_rot, target_rot):
+        def remove_yaw(rot):
+            yaw = torch.atan2(rot[1, 0], rot[0, 0])
+            cy = torch.cos(-yaw)
+            sy = torch.sin(-yaw)
+            rot_z = torch.stack(
+                [
+                    torch.stack([cy, -sy, torch.tensor(0.0, device=rot.device)]),
+                    torch.stack([sy, cy, torch.tensor(0.0, device=rot.device)]),
+                    torch.tensor([0.0, 0.0, 1.0], device=rot.device),
+                ]
+            )
+            return rot_z @ rot
+
+        current_ny = remove_yaw(current_rot)
+        target_ny = remove_yaw(target_rot)
+        return (current_ny - target_ny).abs().sum()
+
     def _compute_skill_pick_target(
         self,
         ee_pose,
@@ -184,15 +202,37 @@ class Leg(Part):
                 april_to_robot,
             )
             pinched = False
+            leg_force_mag = None
+            left_dist = None
+            right_dist = None
+            close_to_leg = False
+            narrow_gripper = (
+                gripper_width
+                < config["robot"]["max_gripper_width"]["square_table"] * 0.8
+            )
             if part_force is not None:
                 part_force = part_force.clone()
                 part_force = part_force - torch.dot(part_force, table_normal) * table_normal
                 leg_force_mag = torch.linalg.norm(part_force)
                 left_dist = torch.linalg.norm(left_finger_pos - rb_states[part_idxs[self.name]][0][:3])
                 right_dist = torch.linalg.norm(right_finger_pos - rb_states[part_idxs[self.name]][0][:3])
-                close_to_leg = left_dist < 0.04 and right_dist < 0.04
-                narrow_gripper = gripper_width < config["robot"]["max_gripper_width"]["square_table"] * 0.8
+                close_to_leg = left_dist < 0.06 and right_dist < 0.06
                 pinched = leg_force_mag > 1e-3 and close_to_leg and narrow_gripper
+            # print(
+            #     "[leg pick_debug] "
+            #     f"force_mag={(leg_force_mag.item() if leg_force_mag is not None else None)} "
+            #     "force_thresh=0.001 "
+            #     f"force_ok={(leg_force_mag is not None and leg_force_mag.item() > 1e-3)} "
+            #     f"left_dist={(left_dist.item() if left_dist is not None else None)} "
+            #     f"right_dist={(right_dist.item() if right_dist is not None else None)} "
+            #     "dist_thresh=0.06 "
+            #     f"close_ok={close_to_leg} "
+            #     f"gripper_width={gripper_width.item():.6f} "
+            #     f"gripper_thresh={(config['robot']['max_gripper_width']['square_table'] * 0.8):.6f} "
+            #     f"gripper_ok={bool(narrow_gripper.item())} "
+            #     f"pinched={pinched} "
+            #     f"pinched_steps={self.skill_pinched_steps}"
+            # )
             self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
             if self.skill_pinched_steps >= 2:
                 self.skill_state = "place"
@@ -219,7 +259,9 @@ class Leg(Part):
                 ee_pose[:2, 3] - self.skill_target[:2, 3]
             ).abs().sum()
             z_error = (ee_pose[2, 3] - self.skill_target[2, 3]).abs()
-            ori_error = (self.skill_target[:3, :3] - ee_pose[:3, :3]).abs().sum()
+            ori_error = self._ori_error_no_yaw(
+                ee_pose[:3, :3], self.skill_target[:3, :3]
+            )
             if (
                 xy_error < self.skill_place_xy_threshold
                 and z_error < self.skill_place_z_threshold
