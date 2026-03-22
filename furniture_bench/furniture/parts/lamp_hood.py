@@ -19,7 +19,6 @@ class LampHood(Part):
         self.reset_x_len = 0.088
         self.reset_y_len = 0.088
 
-        # 0.139626 radian = 8 degree.
         self.rel_pose_from_center[self.tag_ids[0]] = get_mat(
             [0, 0, -0.034022], [-0.139626, 0, 0]
         )
@@ -48,15 +47,153 @@ class LampHood(Part):
 
         self.skill_complete_next_states = ["lift_up_hood"]
         self.hood_grip_width = 0.01
+        self.pick_offset_y = 0.032
+        self.place_height_offset = 0.07
+        self.reset_skill_state()
 
     def is_in_reset_ori(self, pose, from_skill, ori_bound):
-        # Veritical orientation.
         return pose[2, 1] > 0.8
 
     def reset(self):
         self.pre_assemble_done = False
         self._state = "move_up"
         self.gripper_action = -1
+        self.reset_skill_state()
+
+    def reset_skill_state(self):
+        self.skill_state = "pick"
+        self.skill_target = None
+        self.skill_guidance_point = None
+        self.skill_pinched_steps = 0
+
+    def get_skill_label(self):
+        if self.skill_state == "done":
+            return None
+        return self.skill_state
+
+    def get_guidance_point(self):
+        return self.skill_guidance_point
+
+    def _compute_skill_pick_target(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        hood_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        hood_pose = sim_to_april_mat @ hood_pose
+        target_pos = (april_to_robot @ hood_pose[:4, 3])[:3]
+        target_pos[1] += self.pick_offset_y
+        target_pos[2] = (april_to_robot @ hood_pose)[2, 3]
+        return target_pos
+
+    def _compute_skill_place_target(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        assemble_to,
+    ):
+        device = ee_pose.device
+        base_pose = C.to_homogeneous(
+            rb_states[part_idxs[assemble_to]][0][:3],
+            C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
+        )
+        hood_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        base_pose = sim_to_april_mat @ base_pose
+        hood_pose = sim_to_april_mat @ hood_pose
+        hood_pose_robot = april_to_robot @ hood_pose
+        base_target_pose_robot = (
+            april_to_robot
+            @ base_pose
+            @ torch.tensor(
+                get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
+                device=device,
+            )
+        )
+        target_hood_pose_robot = hood_pose_robot.clone()
+        target_hood_pose_robot[:3, 3] = base_target_pose_robot[:3, 3]
+        target_hood_pose_robot[2, 3] += self.place_height_offset
+        rel = target_hood_pose_robot @ torch.linalg.inv(hood_pose_robot)
+        return rel @ ee_pose
+
+    def update_skill_state(
+        self,
+        ee_pos,
+        ee_quat,
+        gripper_width,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        left_finger_pos,
+        right_finger_pos,
+        left_finger_force,
+        right_finger_force,
+        part_force,
+        assemble_to,
+        assembled=False,
+    ):
+        ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
+        table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
+
+        if self.skill_state == "pick":
+            self.skill_guidance_point = self._compute_skill_pick_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+            )
+            pinched = False
+            narrow_gripper = gripper_width < config["robot"]["max_gripper_width"]["lamp"] * 0.8
+            if part_force is not None:
+                part_force = part_force.clone()
+                part_force = part_force - torch.dot(part_force, table_normal) * table_normal
+                left_dist = torch.linalg.norm(
+                    left_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+                )
+                right_dist = torch.linalg.norm(
+                    right_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+                )
+                close_to_hood = left_dist < 0.1 and right_dist < 0.1
+                pinched = torch.linalg.norm(part_force) > 1e-3 and close_to_hood and narrow_gripper
+            self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
+            if self.skill_pinched_steps >= 2:
+                self.skill_state = "place"
+                self.skill_target = self._compute_skill_place_target(
+                    ee_pose,
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                    assemble_to,
+                )
+                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+        elif self.skill_state == "place":
+            self.skill_target = self._compute_skill_place_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
+            self.skill_guidance_point = self.skill_target[:3, 3].clone()
+            if assembled:
+                self.skill_state = "done"
+
+        return self.skill_state
 
     def pre_assemble(
         self,
@@ -143,13 +280,12 @@ class LampHood(Part):
         device = ee_pose.device
 
         if self._state == "reach_hood_floor_xy":
-            # Look at the front
             target_ori = (torch.tensor(rot_mat([np.pi, 0, 0], hom=True)).float())[
                 :3, :3
             ]
             pos = hood_pose[:4, 3]
             target_pos = (april_to_robot @ pos)[:3]
-            target_pos[2] = ee_pos[2]  # Keep the z.
+            target_pos[2] = ee_pos[2]
 
             target_pos[1] += 0.032
             target = C.to_homogeneous(target_pos, target_ori)
@@ -214,8 +350,7 @@ class LampHood(Part):
             )
             base_pose_robot[:3, :3] = self.prev_pose[:3, :3]
             target = base_pose_robot.clone()
-            target[1, 3] += 0.032  # Move up a bit.
-            # Keep the z.
+            target[1, 3] += 0.032
             target[2, 3] = self.prev_pose[2, 3]
             if self.satisfy(
                 ee_pose,
@@ -236,9 +371,9 @@ class LampHood(Part):
                 )
             )
             target = self.prev_pose
-            target[2, 3] = base_pose_robot[2, 3] + 0.07  # Move up a bit.
+            target[2, 3] = base_pose_robot[2, 3] + 0.07
             base_pose_robot[:3, :3] = self.prev_pose[:3, :3]
-            target[:3, :3] = self.prev_pose[:3, :3]  # Keep the same orientation.
+            target[:3, :3] = self.prev_pose[:3, :3]
             if self.satisfy(
                 ee_pose, target, pos_error_threshold=0.0, ori_error_threshold=0.0
             ):

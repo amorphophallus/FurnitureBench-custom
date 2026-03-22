@@ -26,6 +26,13 @@ class LampBulb(Leg):
         self.prev_pose = None
         self._state = "reach_bulb_floor_xy"
         self.gripper_action = -1
+        self.reset_skill_state()
+
+    def reset_skill_state(self):
+        super().reset_skill_state()
+        self.skill_place_xy_threshold = 0.008
+        self.skill_place_z_threshold = 0.05
+        self.skill_place_ori_threshold = 0.5
 
     def _find_down_z(self, mat):
         max_mat = mat.clone()
@@ -36,6 +43,215 @@ class LampBulb(Leg):
                 T.rotmat2hom(rot_mat([0, np.pi / 2, 0]))
             ).float().to(mat.device)
         return max_mat
+
+    def _find_bulb_pose_x_look_front_skill(self, bulb_pose, device):
+        best_bulb_pose = bulb_pose.clone()
+        tmp_bulb_pose = bulb_pose
+        rot = torch.tensor(rot_mat([0, -np.pi / 2, 0], hom=True), device=device).float()
+        for _ in range(3):
+            tmp_bulb_pose = tmp_bulb_pose @ rot
+            if best_bulb_pose[0, 0] < tmp_bulb_pose[0, 0]:
+                best_bulb_pose = tmp_bulb_pose
+        return best_bulb_pose
+
+    def _compute_skill_place_target(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        assemble_to,
+    ):
+        device = ee_pose.device
+        base_pose = C.to_homogeneous(
+            rb_states[part_idxs[assemble_to]][0][:3],
+            C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
+        )
+        bulb_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        base_pose = sim_to_april_mat @ base_pose
+        bulb_pose = sim_to_april_mat @ bulb_pose
+        bulb_pose_robot = april_to_robot @ bulb_pose
+        bulb_pose_robot = self._find_bulb_pose_x_look_front_skill(bulb_pose_robot, device)
+        base_hole_pose_robot = (
+            april_to_robot
+            @ base_pose
+            @ torch.tensor(
+                get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
+                device=device,
+            )
+        )
+        target_hole_pose_robot = torch.tensor(
+            [
+                [1.0, 0.0, 0.0, base_hole_pose_robot[0, 3]],
+                [0.0, 0.0, -1.0, base_hole_pose_robot[1, 3]],
+                [0.0, 1.0, 0.0, base_pose[2, 3] + 0.09],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            device=device,
+        )
+        rel = target_hole_pose_robot @ torch.linalg.inv(bulb_pose_robot)
+        return rel @ ee_pose
+
+    def _compute_skill_insert_target(
+        self,
+        ee_pose,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        assemble_to,
+    ):
+        device = ee_pose.device
+        base_pose = C.to_homogeneous(
+            rb_states[part_idxs[assemble_to]][0][:3],
+            C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
+        )
+        bulb_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        base_pose = sim_to_april_mat @ base_pose
+        bulb_pose = sim_to_april_mat @ bulb_pose
+        bulb_pose_robot = april_to_robot @ bulb_pose
+        bulb_pose_robot = self._find_bulb_pose_x_look_front_skill(bulb_pose_robot, device)
+        base_hole_pose_robot = (
+            april_to_robot
+            @ base_pose
+            @ torch.tensor(
+                get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
+                device=device,
+            )
+        )
+        target_ori = torch.tensor(
+            get_mat([0, 0, 0], [np.pi / 2, 0, np.pi / 4]), device=device
+        )[:3, :3]
+        target_pos = base_hole_pose_robot[:3, 3]
+        target_hole_pose_robot = C.to_homogeneous(target_pos, target_ori)
+        rel = target_hole_pose_robot @ torch.linalg.inv(bulb_pose_robot)
+        target = rel @ ee_pose
+        target[2, 3] += 0.03
+        return target
+
+    def update_skill_state(
+        self,
+        ee_pos,
+        ee_quat,
+        gripper_width,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        left_finger_pos,
+        right_finger_pos,
+        left_finger_force,
+        right_finger_force,
+        part_force,
+        assemble_to,
+        assembled=False,
+    ):
+        ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
+        table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
+        grasp_axis = right_finger_pos - left_finger_pos
+        grasp_axis[2] = 0.0
+        if torch.linalg.norm(grasp_axis) < 1e-6:
+            grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
+
+        if self.skill_state == "pick":
+            self.skill_guidance_point = super()._compute_skill_pick_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+            )
+            pinched = False
+            left_dist = None
+            right_dist = None
+            close_to_bulb = False
+            narrow_gripper = gripper_width < config["robot"]["max_gripper_width"]["lamp"] * 0.9
+            if part_force is not None:
+                part_force = part_force.clone()
+                part_force = part_force - torch.dot(part_force, table_normal) * table_normal
+                left_dist = torch.linalg.norm(
+                    left_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+                )
+                right_dist = torch.linalg.norm(
+                    right_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+                )
+                close_to_bulb = left_dist < 0.1 and right_dist < 0.1
+                pinched = torch.linalg.norm(part_force) > 1e-3 and close_to_bulb and narrow_gripper
+            # print(
+            #     "[lamp_bulb pick_debug] "
+            #     f"force_mag={(torch.linalg.norm(part_force).item() if part_force is not None else None)} "
+            #     "force_thresh=0.001 "
+            #     f"force_ok={(part_force is not None and torch.linalg.norm(part_force).item() > 1e-3)} "
+            #     f"left_dist={(left_dist.item() if left_dist is not None else None)} "
+            #     f"right_dist={(right_dist.item() if right_dist is not None else None)} "
+            #     "dist_thresh=0.1 "
+            #     f"close_ok={close_to_bulb} "
+            #     f"gripper_width={gripper_width.item():.6f} "
+            #     f"gripper_thresh={(config['robot']['max_gripper_width']['lamp'] * 0.9):.6f} "
+            #     f"gripper_ok={bool(narrow_gripper.item())} "
+            #     f"pinched={pinched} "
+            #     f"pinched_steps={self.skill_pinched_steps}"
+            # )
+            self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
+            if self.skill_pinched_steps >= 2:
+                self.skill_state = "place"
+                self.skill_target = self._compute_skill_place_target(
+                    ee_pose,
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                    assemble_to,
+                )
+                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+        elif self.skill_state == "place":
+            self.skill_target = self._compute_skill_place_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
+            self.skill_guidance_point = self.skill_target[:3, 3].clone()
+            xy_error = (ee_pose[:2, 3] - self.skill_target[:2, 3]).abs().sum()
+            z_error = (ee_pose[2, 3] - self.skill_target[2, 3]).abs()
+            ori_error = self._ori_error_no_yaw(
+                ee_pose[:3, :3], self.skill_target[:3, :3]
+            )
+            if (
+                xy_error < self.skill_place_xy_threshold
+                and z_error < self.skill_place_z_threshold
+                and ori_error < self.skill_place_ori_threshold
+            ):
+                self.skill_state = "insert"
+        elif self.skill_state == "insert":
+            self.skill_target = self._compute_skill_insert_target(
+                ee_pose,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
+            self.skill_guidance_point = self.skill_target[:3, 3].clone()
+            if gripper_width >= config["robot"]["max_gripper_width"]["lamp"] - 0.001:
+                self.skill_state = "screw"
+                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+        elif self.skill_state == "screw":
+            if self.skill_target is not None:
+                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+            if assembled:
+                self.skill_state = "done"
+
+        return self.skill_state
 
     def fsm_step(
         self,
@@ -85,7 +301,6 @@ class LampBulb(Leg):
 
         if self._state == "reach_bulb_floor_xy":
             bulb_pose = self._find_down_z(bulb_pose).clone().to(device)
-            # Margin for bulb pose
             bulb_pose = (
                 torch.tensor(get_mat([0, 0.043, 0], [0, 0, 0]), device=device)
                 @ bulb_pose
@@ -95,7 +310,6 @@ class LampBulb(Leg):
             target_pos = (april_to_robot @ pos)[:3]
             target_ori = ee_pose[:3, :3]
             target_pos[2] = ee_pos[2]
-            # target_pos[1] += 0.01
             target = self.add_noise_first_target(
                 C.to_homogeneous(target_pos, target_ori),
                 ori_noise=torch.tensor([0, 0, 0, 1], device=device),
@@ -114,7 +328,6 @@ class LampBulb(Leg):
                 @ april_to_robot
                 @ rot
             )[:3, :3]
-            # Get the y-axis rotation.
             target_pos = (
                 april_to_robot
                 @ torch.tensor(get_mat([0, 0.043, 0], [0, 0, 0]), device=device)
@@ -122,7 +335,6 @@ class LampBulb(Leg):
             )[:3]
             target_pos[2] = ee_pos[2]
             target = C.to_homogeneous(target_pos, target_ori)
-            # theta_y = torch.atan2(bulb_pose[1,1], torch.tensor(1, device=device))
             if self.satisfy(ee_pose, target, pos_error_threshold=0.015):
                 self.prev_pose = target
                 next_state = "reach_bulb_floor_z"
@@ -136,14 +348,12 @@ class LampBulb(Leg):
                 @ april_to_robot
                 @ rot
             )[:3, :3]
-            # Get the y-axis rotation.
             target_pos = (
                 april_to_robot
                 @ torch.tensor(get_mat([0, 0.043, 0], [0, 0, 0]), device=device)
                 @ bulb_pose[:4, 3]
             )[:3]
-            target_pos[2] += 0.01  # Margin.
-            # target_pos[2] = ee_pos[2]
+            target_pos[2] += 0.01
             target = C.to_homogeneous(target_pos, target_ori)
             if self.satisfy(ee_pose, target, pos_error_threshold=0.007):
                 self.prev_pose = target
@@ -179,7 +389,6 @@ class LampBulb(Leg):
                 self.prev_pose = target
                 next_state = "match_leg_ori"
         elif self._state == "match_leg_ori":
-            # target_ori = (margin @ rot_mat_tensor(np.pi, 0, 0, device))[:3, :3]
             target_ori = (rot_mat_tensor(np.pi, 0, 0, device))[:3, :3]
             target_pos = torch.tensor([0.57, 0.10, 0.17], device=device)
             target = self.add_noise_first_target(
@@ -240,7 +449,7 @@ class LampBulb(Leg):
 
             rel = rel_rot_mat(bulb_pose_robot, target_hole_pose_robot)
             target = rel @ ee_pose
-            target[2] += 0.03  # Margin.
+            target[2] += 0.03
             if self.satisfy(
                 ee_pose, target, pos_error_threshold=0.000, ori_error_threshold=0.0, max_len=30
             ):
@@ -255,7 +464,6 @@ class LampBulb(Leg):
             ):
                 next_state = "insert"
         elif self._state == "insert":
-            # Dummy transition state for skill complete.
             target = self.prev_pose
             next_state = "pre_grasp"
         elif self._state == "release":
@@ -270,7 +478,6 @@ class LampBulb(Leg):
             target_ori = rot_mat_tensor(np.pi, 0, 0, device)[:3, :3]
             target_pos = (april_to_robot @ bulb_pose[:4, 3])[:3]
             target_pos[2] += self.grasp_margin_z
-            # target = self.add_noise_first_target(C.to_homogeneous(target_pos, target_ori))
             target = C.to_homogeneous(target_pos, target_ori)
             if self.satisfy(ee_pose, target):
                 self.prev_pose = target
@@ -303,7 +510,6 @@ class LampBulb(Leg):
 
     def state_no_noise(self):
         return self._state in [
-            # 'screw_grasp', 'screw', 'match_leg_ori', 'reach_table_top_xy', 'reach_table_top_z'
             "insert_wait",
             "insert_release",
             "insert",
