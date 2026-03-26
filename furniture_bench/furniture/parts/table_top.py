@@ -177,13 +177,14 @@ class TableTop(Part):
                 )
                 self.skill_guidance_point = self.skill_target[:3, 3].clone()
         elif self.skill_state == "push":
-            self.skill_target = self._compute_skill_push_target(
-                ee_pose,
-                rb_states,
-                part_idxs,
-                sim_to_april_mat,
-                april_to_robot,
-            )
+            if self.skill_target is None:
+                self.skill_target = self._compute_skill_push_target(
+                    ee_pose,
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                )
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
             if self.satisfy(
                 ee_pose,
