@@ -1686,7 +1686,11 @@ class FurnitureSimEnv(gym.Env):
         )
         rel_pose = torch.linalg.inv(part1_pose) @ part2_pose
         assembled_rel_poses = self.furniture.assembled_rel_poses[(part_idx1, part_idx2)]
-        if self.furniture.assembled(rel_pose.cpu().numpy(), assembled_rel_poses):
+        if self.furniture.assembled(
+            rel_pose.cpu().numpy(),
+            assembled_rel_poses,
+            pair=(part_idx1, part_idx2),
+        ):
             self.assemble_idx += 1
             self.move_neutral = True
             return (

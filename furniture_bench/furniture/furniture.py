@@ -53,6 +53,7 @@ class Furniture(ABC):
         # Reset assembled set.
         self.assembled_set = set()
         self.position_only = set()
+        self.ignore_z_rot = set()
         self.max_env_steps = 3000
 
         self._init_obstacle()
@@ -455,27 +456,40 @@ class Furniture(ABC):
         if assembled_rel_poses is None:
             raise Exception("No relative pose!")
 
+        pair = (part_idx1, part_idx2)
         for assembled_rel_pose in assembled_rel_poses:
             ori_bound = (
-                -1 if (part_idx1, part_idx2) in self.position_only else self.ori_bound
+                -1 if pair in self.position_only else self.ori_bound
             )
             if is_similar_pose(
                 assembled_rel_pose,
                 rel_pose,
                 ori_bound=ori_bound,
                 pos_threshold=self.assembled_pos_threshold,
+                ignore_z_rot=pair in self.ignore_z_rot,
             ):
                 return True
 
         return False
 
-    def assembled(self, rel_pose, assembled_rel_poses):
+    def assembled(
+        self,
+        rel_pose,
+        assembled_rel_poses,
+        pair: Optional[Tuple[int, int]] = None,
+    ):
+        ori_bound = (
+            -1
+            if pair is not None and pair in self.position_only
+            else self.ori_bound
+        )
         for assembled_rel_pose in assembled_rel_poses:
             if is_similar_pose(
                 assembled_rel_pose,
                 rel_pose,
-                ori_bound=self.ori_bound,
+                ori_bound=ori_bound,
                 pos_threshold=self.assembled_pos_threshold,
+                ignore_z_rot=pair in self.ignore_z_rot if pair is not None else False,
             ):
                 return True
 

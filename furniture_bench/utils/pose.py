@@ -90,11 +90,38 @@ def cosine_sim(w, v):
     return np.dot(w, v) / (np.linalg.norm(w) * np.linalg.norm(v))
 
 
-def is_similar_pose(pose1, pose2, ori_bound=0.99, pos_threshold=[0.01, 0.007, 0.007]):
-    """Check if two poses are similar."""
-    similar_rot = is_similar_rot(pose1[:3, :3], pose2[:3, :3], ori_bound)
+def remove_yaw(rot):
+    yaw = np.arctan2(rot[1, 0], rot[0, 0])
+    cy = np.cos(-yaw)
+    sy = np.sin(-yaw)
+    rot_z = np.array(
+        [
+            [cy, -sy, 0.0],
+            [sy, cy, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=rot.dtype,
+    )
+    return rot_z @ rot
 
-    similar_pos = is_similar_pos(pose1[:3, 3], pose2[:3, 3], pos_threshold)
+
+def is_similar_pose(
+    pose1,
+    pose2,
+    ori_bound=0.99,
+    pos_threshold=[0.01, 0.007, 0.007],
+    ignore_z_rot=False,
+):
+    """Check if two poses are similar."""
+    rot1 = pose1[:3, :3]
+    rot2 = pose2[:3, :3]
+    cmp_rot1 = remove_yaw(rot1) if ignore_z_rot else rot1
+    cmp_rot2 = remove_yaw(rot2) if ignore_z_rot else rot2
+    similar_rot = is_similar_rot(cmp_rot1, cmp_rot2, ori_bound)
+
+    pos1 = pose1[:3, 3]
+    pos2 = pose2[:3, 3]
+    similar_pos = is_similar_pos(pos1, pos2, pos_threshold)
 
     return similar_rot and similar_pos
 
@@ -107,6 +134,10 @@ def is_similar_rot(rot1, rot2, ori_bound=0.99):
     if cosine_sim(rot1[:, 2], rot2[:, 2]) < ori_bound:
         return False
     return True
+
+
+def is_similar_rot_ignore_z(rot1, rot2, ori_bound=0.99):
+    return is_similar_rot(remove_yaw(rot1), remove_yaw(rot2), ori_bound)
 
 
 def is_similar_pos(pos1, pos2, pos_threshold=[0.01, 0.007, 0.007]):

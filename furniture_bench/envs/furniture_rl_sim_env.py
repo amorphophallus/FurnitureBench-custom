@@ -2121,6 +2121,12 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
             # Leading dimension is for checking if rel pose matches on of many possible assembled poses
             if pair in self.furniture.position_only:
                 similar_rot = torch.tensor([True] * self.num_envs, device=self.device)
+            elif pair in self.furniture.ignore_z_rot:
+                similar_rot = C.is_similar_rot_ignore_z(
+                    rel_pose[..., :3, :3],
+                    self.assembled_rel_poses[i, :, None, :3, :3],
+                    self.furniture.ori_bound,
+                )
             else:
                 similar_rot = C.is_similar_rot(
                     rel_pose[..., :3, :3],

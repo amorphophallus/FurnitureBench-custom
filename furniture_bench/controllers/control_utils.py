@@ -982,6 +982,25 @@ def is_similar_rot(rot1: torch.Tensor, rot2: torch.Tensor, ori_bound: float):
 
 
 @torch.jit.script
+def remove_yaw(rot: torch.Tensor):
+    yaw = torch.atan2(rot[..., 1, 0], rot[..., 0, 0])
+    cy = torch.cos(-yaw)
+    sy = torch.sin(-yaw)
+    zeros = torch.zeros_like(cy)
+    ones = torch.ones_like(cy)
+    row0 = torch.stack([cy, -sy, zeros], dim=-1)
+    row1 = torch.stack([sy, cy, zeros], dim=-1)
+    row2 = torch.stack([zeros, zeros, ones], dim=-1)
+    rot_z = torch.stack([row0, row1, row2], dim=-2)
+    return torch.matmul(rot_z, rot)
+
+
+@torch.jit.script
+def is_similar_rot_ignore_z(rot1: torch.Tensor, rot2: torch.Tensor, ori_bound: float):
+    return is_similar_rot(remove_yaw(rot1), remove_yaw(rot2), ori_bound)
+
+
+@torch.jit.script
 def is_similar_pos(pos1: torch.Tensor, pos2: torch.Tensor, pos_threshold: torch.Tensor):
     pos_diffs = torch.abs(pos1 - pos2)
     within_threshold = pos_diffs <= pos_threshold

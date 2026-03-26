@@ -5,3 +5,4 @@ class OneLeg(SquareTable):
     def __init__(self):
         super().__init__()
         self.should_be_assembled = [(0, 4)]
+        self.ignore_z_rot.add((0, 4))
