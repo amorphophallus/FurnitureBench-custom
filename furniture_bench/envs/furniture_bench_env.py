@@ -118,7 +118,7 @@ class FurnitureBenchEnv(gym.Env):
                 f"record_{furniture}/from_skill_{from_skill}_to_skill_{to_skill}"
             )
             record_dir.mkdir(parents=True, exist_ok=True)
-            path = record_dir / (datetime.now().strftime("%Y-%m-%d-%H:%M:%S") + ".avi")
+            path = record_dir / (datetime.now().strftime("%Y-%m-%d-%H-%M-%S") + ".avi")
             size = (224 * 2, 224) if self.resize_img else (1280 * 2, 720)
             fourcc = cv2.VideoWriter_fourcc("M", "J", "P", "G")
             self.video_writer = cv2.VideoWriter(str(path), fourcc, 20, size)

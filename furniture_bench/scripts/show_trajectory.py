@@ -53,7 +53,7 @@ def main():
         raise ValueError("Either data_dir or data_path must be specified.")
 
     if args.save_video:
-        path = datetime.now().strftime("%Y-%m-%d-%H:%M:%S") + ".avi"
+        path = datetime.now().strftime("%Y-%m-%d-%H-%M-%S") + ".avi"
         size = (224 * 2, 224)
         out = cv2.VideoWriter(
             path, cv2.VideoWriter_fourcc("M", "J", "P", "G"), 10, size, True

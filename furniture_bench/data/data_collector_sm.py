@@ -553,7 +553,7 @@ class DataCollectorSpaceMouse:
     def save(self, collect_enum: CollectEnum, info):
         self.verbose_print(f"Length of trajectory: {len(self.obs)}")
 
-        data_name = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
+        data_name = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         demo_path = self.data_path / data_name
         demo_path.mkdir(parents=True, exist_ok=True)
 
