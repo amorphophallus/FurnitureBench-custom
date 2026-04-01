@@ -981,7 +981,6 @@ def is_similar_rot(rot1: torch.Tensor, rot2: torch.Tensor, ori_bound: float):
     return torch.all(cosine_sims >= ori_bound, dim=-1)
 
 
-@torch.jit.script
 def remove_yaw(rot: torch.Tensor):
     yaw = torch.atan2(rot[..., 1, 0], rot[..., 0, 0])
     cy = torch.cos(-yaw)
@@ -995,9 +994,13 @@ def remove_yaw(rot: torch.Tensor):
     return torch.matmul(rot_z, rot)
 
 
-@torch.jit.script
 def is_similar_rot_ignore_z(rot1: torch.Tensor, rot2: torch.Tensor, ori_bound: float):
-    return is_similar_rot(remove_yaw(rot1), remove_yaw(rot2), ori_bound)
+    rel_rot = torch.matmul(rot1, rot2.transpose(-1, -2))
+    rel_axis_angle = matrix_to_axis_angle(rel_rot)
+    rel_axis_angle[..., 1] = 0.0
+    ignored_angle = torch.norm(rel_axis_angle, dim=-1)
+    angle_threshold = math.acos(max(min(float(ori_bound), 1.0), -1.0))
+    return ignored_angle <= angle_threshold
 
 
 @torch.jit.script

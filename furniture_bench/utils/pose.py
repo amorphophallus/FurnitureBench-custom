@@ -115,9 +115,10 @@ def is_similar_pose(
     """Check if two poses are similar."""
     rot1 = pose1[:3, :3]
     rot2 = pose2[:3, :3]
-    cmp_rot1 = remove_yaw(rot1) if ignore_z_rot else rot1
-    cmp_rot2 = remove_yaw(rot2) if ignore_z_rot else rot2
-    similar_rot = is_similar_rot(cmp_rot1, cmp_rot2, ori_bound)
+    if ignore_z_rot:
+        similar_rot = is_similar_rot_ignore_z(rot1, rot2, ori_bound)
+    else:
+        similar_rot = is_similar_rot(rot1, rot2, ori_bound)
 
     pos1 = pose1[:3, 3]
     pos2 = pose2[:3, 3]
@@ -137,7 +138,28 @@ def is_similar_rot(rot1, rot2, ori_bound=0.99):
 
 
 def is_similar_rot_ignore_z(rot1, rot2, ori_bound=0.99):
-    return is_similar_rot(remove_yaw(rot1), remove_yaw(rot2), ori_bound)
+    rel_rot = rot1 @ rot2.T
+    trace = np.trace(rel_rot)
+    cos_angle = np.clip((trace - 1.0) / 2.0, -1.0, 1.0)
+    angle = np.arccos(cos_angle)
+
+    if np.isclose(angle, 0.0):
+        rel_axis_angle = np.zeros(3, dtype=rot1.dtype)
+    else:
+        axis = np.array(
+            [
+                rel_rot[2, 1] - rel_rot[1, 2],
+                rel_rot[0, 2] - rel_rot[2, 0],
+                rel_rot[1, 0] - rel_rot[0, 1],
+            ],
+            dtype=rot1.dtype,
+        ) / (2.0 * np.sin(angle))
+        rel_axis_angle = axis * angle
+
+    rel_axis_angle[1] = 0.0
+    ignored_angle = np.linalg.norm(rel_axis_angle)
+    angle_threshold = np.arccos(np.clip(ori_bound, -1.0, 1.0))
+    return ignored_angle <= angle_threshold
 
 
 def is_similar_pos(pos1, pos2, pos_threshold=[0.01, 0.007, 0.007]):

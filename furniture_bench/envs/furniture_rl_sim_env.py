@@ -2133,15 +2133,19 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
                     self.assembled_rel_poses[i, :, None, :3, :3],
                     self.furniture.ori_bound,
                 )
+            pos_threshold = torch.tensor(
+                self.furniture.assembled_pos_threshold,
+                device=self.device,
+                dtype=rel_pose.dtype,
+            )
             similar_pos = C.is_similar_pos(
                 rel_pose[..., :3, 3],
                 self.assembled_rel_poses[i, :, None, :3, 3],
-                torch.tensor(
-                    self.furniture.assembled_pos_threshold, device=self.device
-                ),
+                pos_threshold,
             )
             assembled_mask = similar_rot & similar_pos
             assembled_now = assembled_mask.any(dim=0)
+
 
             self.consecutive_assembled_steps[:, i] = torch.where(
                 assembled_now,
