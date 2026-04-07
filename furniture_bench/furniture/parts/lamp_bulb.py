@@ -182,7 +182,7 @@ class LampBulb(Leg):
                 right_dist = torch.linalg.norm(
                     right_finger_pos - rb_states[part_idxs[self.name]][0][:3]
                 )
-                close_to_bulb = left_dist < 0.1 and right_dist < 0.1
+                close_to_bulb = left_dist < 0.12 and right_dist < 0.12
                 pinched = torch.linalg.norm(part_force) > 1e-3 and close_to_bulb and narrow_gripper
             # print(
             #     "[lamp_bulb pick_debug] "
@@ -191,7 +191,7 @@ class LampBulb(Leg):
             #     f"force_ok={(part_force is not None and torch.linalg.norm(part_force).item() > 1e-3)} "
             #     f"left_dist={(left_dist.item() if left_dist is not None else None)} "
             #     f"right_dist={(right_dist.item() if right_dist is not None else None)} "
-            #     "dist_thresh=0.1 "
+            #     "dist_thresh=0.12 "
             #     f"close_ok={close_to_bulb} "
             #     f"gripper_width={gripper_width.item():.6f} "
             #     f"gripper_thresh={(config['robot']['max_gripper_width']['lamp'] * 0.9):.6f} "
