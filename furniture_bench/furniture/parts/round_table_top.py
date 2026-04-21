@@ -165,14 +165,6 @@ class RoundTableTop(Part):
             top_pose = sim_to_april_mat @ top_pose
             top_pos_robot = (april_to_robot @ top_pose)[:3, 3]
             pos_error = (top_pos_robot - self.skill_guidance_point).abs().sum()
-            print(
-                "[round_table_top push_debug] "
-                f"top_pos={top_pos_robot.tolist()} "
-                f"guidance_point={self.skill_guidance_point.tolist()} "
-                f"pos_error={pos_error.item():.6f} "
-                "pos_thresh=0.015000 "
-                f"push_ok={bool(pos_error < 0.05)}"
-            )
             if pos_error < 0.05:
                 self.skill_state = "done"
 

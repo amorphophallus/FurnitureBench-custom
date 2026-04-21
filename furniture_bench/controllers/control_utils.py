@@ -994,10 +994,15 @@ def remove_yaw(rot: torch.Tensor):
     return torch.matmul(rot_z, rot)
 
 
-def is_similar_rot_ignore_z(rot1: torch.Tensor, rot2: torch.Tensor, ori_bound: float):
+def is_similar_rot_ignore_z(
+    rot1: torch.Tensor,
+    rot2: torch.Tensor,
+    ori_bound: float,
+    ignore_z_rot_axis: int = 1,
+):
     rel_rot = torch.matmul(rot1, rot2.transpose(-1, -2))
     rel_axis_angle = matrix_to_axis_angle(rel_rot)
-    rel_axis_angle[..., 1] = 0.0
+    rel_axis_angle[..., ignore_z_rot_axis] = 0.0
     ignored_angle = torch.norm(rel_axis_angle, dim=-1)
     angle_threshold = math.acos(max(min(float(ori_bound), 1.0), -1.0))
     return ignored_angle <= angle_threshold

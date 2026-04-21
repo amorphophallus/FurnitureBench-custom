@@ -113,6 +113,12 @@ class FurnitureSimEnv(gym.Env):
         else:
             self.furniture = furniture_factory(furniture)
 
+        self.debug = bool(kwargs.get("debug", False))
+        self.assembly_debug = bool(kwargs.get("assembly_debug", self.debug))
+        self.furniture.assembly_debug = self.assembly_debug
+        for furn in self.furnitures:
+            furn.assembly_debug = self.assembly_debug
+
         self.furniture.max_env_steps = max_env_steps
         for furn in self.furnitures:
             furn.max_env_steps = max_env_steps

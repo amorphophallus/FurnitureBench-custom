@@ -6,6 +6,7 @@ class OneLeg(SquareTable):
         super().__init__()
         self.should_be_assembled = [(0, 4)]
         self.ignore_z_rot.add((0, 4))
+        self.ignore_z_rot_axis[(0, 4)] = 1  # 表示相对旋转中 z 轴是第二维
         self.ori_bound = 0.99  # 忽略 z 轴旋转后，收紧 one_leg 的旋转要求（越接近 1 要求越紧，越接近 0 要求越松）
         """
         0.94 -> 19.95°

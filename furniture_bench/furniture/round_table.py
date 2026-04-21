@@ -26,8 +26,10 @@ class RoundTable(Furniture):
         self.should_be_assembled = [(0, 1), (1, 2)]
         # Round-table assembly can look successful in XY before the part is fully
         # seated along Z, so use a tighter Z threshold than the global default.
-        self.assembled_pos_threshold = [0.010, 0.005, 0.003]
-        self.position_only.add((0, 1))
+        self.assembled_pos_threshold = [0.010, 0.005, 0.0018]
+        self.ignore_z_rot.update({(0, 1), (1, 2)})
+        self.ignore_z_rot_axis[(0, 1)] = 2
+        self.ignore_z_rot_axis[(1, 2)] = 1
 
         self.assembled_rel_poses[(0, 1)] = [
             # get_mat([0, 0, 0.044375], [np.pi / 2, 0, np.pi + np.pi / 36])

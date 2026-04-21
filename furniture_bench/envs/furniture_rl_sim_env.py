@@ -132,6 +132,12 @@ class FurnitureSimEnv(gym.Env):
         else:
             self.furniture = furniture_factory(furniture)
 
+        self.debug = bool(kwargs.get("debug", False))
+        self.assembly_debug = bool(kwargs.get("assembly_debug", self.debug))
+        self.furniture.assembly_debug = self.assembly_debug
+        for furn in self.furnitures:
+            furn.assembly_debug = self.assembly_debug
+
         self.max_env_steps = max_env_steps
         self.furniture.max_env_steps = max_env_steps
         for furn in self.furnitures:
@@ -2040,6 +2046,139 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
         )
         self.assembly_confirm_frames = 3
 
+    def _format_debug_value(self, value):
+        if isinstance(value, torch.Tensor):
+            return self._format_debug_value(value.detach().cpu().tolist())
+        if isinstance(value, np.ndarray):
+            return self._format_debug_value(value.tolist())
+        if isinstance(value, (list, tuple)):
+            return "[" + ", ".join(self._format_debug_value(v) for v in value) + "]"
+        if isinstance(value, (np.bool_, bool)):
+            return str(bool(value))
+        if isinstance(value, (np.integer, int)):
+            return str(int(value))
+        if isinstance(value, (np.floating, float)):
+            return f"{float(value):.4f}"
+        return str(value)
+
+    def _print_assembly_reward_debug(
+        self,
+        pair_idx: int,
+        pair,
+        rel_pose: torch.Tensor,
+        pos_threshold: torch.Tensor,
+        similar_rot: torch.Tensor,
+        similar_pos: torch.Tensor,
+        assembled_mask: torch.Tensor,
+        assembled_now: torch.Tensor,
+        newly_assembled_mask: torch.Tensor,
+    ):
+        if not self.assembly_debug:
+            return
+
+        part1_name = self.furniture.parts[pair[0]].name
+        part2_name = self.furniture.parts[pair[1]].name
+        target_poses = self.assembled_rel_poses[pair_idx]
+        use_position_only = pair in self.furniture.position_only
+        use_ignore_z_rot = pair in self.furniture.ignore_z_rot
+        ignore_z_rot_axis = self.furniture.get_ignore_z_rot_axis(pair)
+        rot_threshold_rad = (
+            None
+            if use_position_only
+            else float(np.arccos(np.clip(self.furniture.ori_bound, -1.0, 1.0)))
+        )
+
+        for env_idx in range(self.num_envs):
+            unresolved_pair_idxs = torch.where(~self.already_assembled[env_idx])[0]
+            if unresolved_pair_idxs.numel() == 0:
+                continue
+            active_pair_idx = int(unresolved_pair_idxs[0].item())
+            if pair_idx != active_pair_idx:
+                continue
+
+            step = int(self.env_steps[env_idx].item())
+            current_pos = rel_pose[env_idx, :3, 3]
+            current_rot = rel_pose[env_idx, :3, :3]
+            print(
+                "[assembly_reward_debug] "
+                f"furniture={self.furniture_name} "
+                f"env={env_idx} "
+                f"step={step} "
+                f"pair_idx={pair_idx} "
+                f"pair=({part1_name},{part2_name}) "
+                f"mode={'position_only' if use_position_only else 'ignore_z_rot' if use_ignore_z_rot else 'full_rot'} "
+                f"ignore_axis={ignore_z_rot_axis if use_ignore_z_rot else 'n/a'}"
+            )
+            print(f"  current_rel_pos={self._format_debug_value(current_pos)}")
+            print(f"  current_rel_rot={self._format_debug_value(current_rot)}")
+            for pose_idx in range(target_poses.shape[0]):
+                target_pose = target_poses[pose_idx]
+                target_pos = target_pose[:3, 3]
+                target_rot = target_pose[:3, :3]
+                pos_diff = current_pos - target_pos
+                abs_pos_diff = pos_diff.abs()
+                pos_within_threshold = (abs_pos_diff <= pos_threshold).tolist()
+
+                rel_rot_to_target = torch.matmul(current_rot, target_rot.transpose(-1, -2))
+                rel_axis_angle = C.matrix_to_axis_angle(rel_rot_to_target)
+                ignore_z_axis_angle = rel_axis_angle.clone()
+                ignore_z_axis_angle[ignore_z_rot_axis] = 0.0
+                full_angle_rad = torch.norm(rel_axis_angle).item()
+                ignore_z_angle_rad = torch.norm(ignore_z_axis_angle).item()
+                rot_row_cosines = C.cosine_sim(current_rot, target_rot).detach().cpu().tolist()
+
+                if similar_rot.ndim == 1:
+                    env_similar_rot = bool(similar_rot[env_idx].item())
+                else:
+                    env_similar_rot = bool(similar_rot[pose_idx, env_idx].item())
+                env_similar_pos = bool(similar_pos[pose_idx, env_idx].item())
+                env_assembled_mask = bool(assembled_mask[pose_idx, env_idx].item())
+
+                print(
+                    f"  target_pose_idx={pose_idx} "
+                    f"similar_rot={env_similar_rot} "
+                    f"similar_pos={env_similar_pos} "
+                    f"assembled_mask={env_assembled_mask}"
+                )
+                print(f"    target_rel_pos={self._format_debug_value(target_pos)}")
+                print(f"    target_rel_rot={self._format_debug_value(target_rot)}")
+                print(f"    rel_pos_diff={self._format_debug_value(pos_diff)}")
+                print(f"    abs_rel_pos_diff={self._format_debug_value(abs_pos_diff)}")
+                print(f"    pos_threshold={self._format_debug_value(pos_threshold)}")
+                print(
+                    "    pos_within_threshold="
+                    f"{self._format_debug_value(pos_within_threshold)}"
+                )
+                print(
+                    f"    rot_row_cosines={self._format_debug_value(rot_row_cosines)}"
+                )
+                print(
+                    "    rot_full_angle_rad="
+                    f"{self._format_debug_value(full_angle_rad)} "
+                    f"rot_full_angle_deg={self._format_debug_value(np.degrees(full_angle_rad))}"
+                )
+                print(
+                    "    rot_ignore_z_angle_rad="
+                    f"{self._format_debug_value(ignore_z_angle_rad)} "
+                    f"rot_ignore_z_angle_deg={self._format_debug_value(np.degrees(ignore_z_angle_rad))}"
+                )
+                print(
+                    f"    rel_axis_angle={self._format_debug_value(rel_axis_angle)}"
+                )
+                print(
+                    "    rel_axis_angle_ignore_z="
+                    f"{self._format_debug_value(ignore_z_axis_angle)}"
+                )
+                if rot_threshold_rad is None:
+                    print("    rot_threshold=position_only")
+                else:
+                    print(
+                        "    rot_threshold_rad="
+                        f"{self._format_debug_value(rot_threshold_rad)} "
+                        f"rot_threshold_deg={self._format_debug_value(np.degrees(rot_threshold_rad))} "
+                        f"ori_bound={self._format_debug_value(self.furniture.ori_bound)}"
+                    )
+
     def reset(self, env_idxs: torch.Tensor = None):
         # return super().reset()
         # can also reset the full set of robots/parts, without applying torques and refreshing
@@ -2126,6 +2265,7 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
                     rel_pose[..., :3, :3],
                     self.assembled_rel_poses[i, :, None, :3, :3],
                     self.furniture.ori_bound,
+                    self.furniture.get_ignore_z_rot_axis(pair),
                 )
             else:
                 similar_rot = C.is_similar_rot(
@@ -2146,7 +2286,6 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
             assembled_mask = similar_rot & similar_pos
             assembled_now = assembled_mask.any(dim=0)
 
-
             self.consecutive_assembled_steps[:, i] = torch.where(
                 assembled_now,
                 self.consecutive_assembled_steps[:, i] + 1,
@@ -2159,85 +2298,17 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
                 & ~self.already_assembled[:, i]
             )
 
-            # debug round_table
-            # if self.furniture_name == "round_table":
-            #     part1_name = self.furniture.parts[pair[0]].name
-            #     part2_name = self.furniture.parts[pair[1]].name
-            #     matched_pose_idx_per_env = torch.argmax(assembled_mask.int(), dim=0)
-            #     for e_idx in range(self.num_envs):
-            #         matched_idx = matched_pose_idx_per_env[e_idx]
-            #         target_z = self.assembled_rel_poses[i, matched_idx, 2, 3]
-            #         target_pos = self.assembled_rel_poses[i, matched_idx, :3, 3]
-            #         curr_pos = rel_pose[e_idx, :3, 3]
-            #         abs_pos_diff = (curr_pos - target_pos).abs()
-            #         curr_z = rel_pose[e_idx, 2, 3]
-            #         abs_dz = (curr_z - target_z).abs()
-            #         if similar_rot.ndim == 1:
-            #             env_similar_rot = bool(similar_rot[e_idx].item())
-            #         else:
-            #             env_similar_rot = bool(similar_rot[matched_idx, e_idx].item())
-            #         env_similar_pos = bool(similar_pos[matched_idx, e_idx].item())
-            #         env_assembled_now = bool(assembled_now[e_idx].item())
-            #         print(
-            #             "[round_table assembly_debug] "
-            #             f"env={e_idx} pair=({part1_name},{part2_name}) "
-            #             f"step={self.env_steps[e_idx].item()} "
-            #             f"abs_diff_xyz={abs_pos_diff.tolist()} "
-            #             f"abs_dz={abs_dz.item():.6f} "
-            #             f"z_thresh={self.furniture.assembled_pos_threshold[2]:.6f} "
-            #             f"similar_rot={env_similar_rot} "
-            #             f"similar_pos={env_similar_pos} "
-            #             f"assembled_now={env_assembled_now} "
-            #             f"consecutive={self.consecutive_assembled_steps[e_idx, i].item()}"
-            #         )
-            
-            # --- Debugging weird rewards ---
-            if newly_assembled_mask[:, i].any():
-                env_trigger_idxs = torch.where(newly_assembled_mask[:, i])[0]
-                for e_idx in env_trigger_idxs:
-                    part1_name = self.furniture.parts[pair[0]].name
-                    part2_name = self.furniture.parts[pair[1]].name
-                    print(
-                        f"!!! Reward Triggered in Env {e_idx.item()} for Pair {pair} "
-                        f"({part1_name}, {part2_name}) !!!"
-                    )
-                    print(f"Step: {self.env_steps[e_idx].item()}")
-                    print(
-                        f"Confirmed after {self.consecutive_assembled_steps[e_idx, i].item()} "
-                        "consecutive in-threshold frames"
-                    )
-                    
-                    # Get the matched pose index
-                    matched_pose_idx = torch.where(assembled_mask[:, e_idx])[0]
-                    print(f"Matched Pose Index in assembled_rel_poses: {matched_pose_idx}")
-                    
-                    # Print current calculated relative pose
-                    curr_pos = rel_pose[e_idx, :3, 3]
-                    curr_rot = rel_pose[e_idx, :3, :3]
-                    print(f"Current Rel Pos: {curr_pos.tolist()}")
-                    print(f"Current Rel Rot: {curr_rot.tolist()}")
-                    
-                    # Print target pose(s) that were matched
-                    for p_idx in matched_pose_idx:
-                        target_pos = self.assembled_rel_poses[i, p_idx, :3, 3]
-                        target_rot = self.assembled_rel_poses[i, p_idx, :3, :3]
-                        pos_diff = curr_pos - target_pos
-                        abs_pos_diff = pos_diff.abs()
-                        pos_dist = torch.norm(curr_pos - target_pos)
-                        print(f"Target Pose {p_idx} Pos: {target_pos.tolist()}")
-                        print(f"Target Pose {p_idx} Rot: {target_rot.tolist()}")
-                        print(f"Rel Pos Diff xyz: {pos_diff.tolist()}")
-                        print(f"Abs Rel Pos Diff xyz: {abs_pos_diff.tolist()}")
-                        print(
-                            "Z Debug: "
-                            f"curr_z={curr_pos[2].item():.6f}, "
-                            f"target_z={target_pos[2].item():.6f}, "
-                            f"abs_dz={abs_pos_diff[2].item():.6f}, "
-                            f"z_thresh={self.furniture.assembled_pos_threshold[2]:.6f}"
-                        )
-                        print(f"Pos Distance: {pos_dist.item()}")
-                        print(f"Pos Threshold: {self.furniture.assembled_pos_threshold}")
-            # -------------------------------
+            self._print_assembly_reward_debug(
+                pair_idx=i,
+                pair=pair,
+                rel_pose=rel_pose,
+                pos_threshold=pos_threshold,
+                similar_rot=similar_rot,
+                similar_pos=similar_pos,
+                assembled_mask=assembled_mask,
+                assembled_now=assembled_now,
+                newly_assembled_mask=newly_assembled_mask,
+            )
 
             # Update the already_assembled tensor
             self.already_assembled[:, i] |= newly_assembled_mask[:, i]

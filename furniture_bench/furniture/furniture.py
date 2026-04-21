@@ -11,7 +11,11 @@ import numpy.typing as npt
 from gym import logger
 
 import furniture_bench.utils.transform as T
-from furniture_bench.utils.pose import is_similar_pose
+from furniture_bench.utils.pose import (
+    is_similar_pos,
+    is_similar_rot,
+    is_similar_rot_ignore_z,
+)
 from furniture_bench.config import config
 from furniture_bench.furniture.parts.part import Part
 from furniture_bench.utils.detection import detection_loop
@@ -54,6 +58,8 @@ class Furniture(ABC):
         self.assembled_set = set()
         self.position_only = set()
         self.ignore_z_rot = set()
+        self.ignore_z_rot_axis = {}
+        self.assembly_debug = False
         self.max_env_steps = 3000
 
         self._init_obstacle()
@@ -422,6 +428,163 @@ class Furniture(ABC):
             and part_pos[2] < self.robot_pos_lim[2][1]
         )
 
+    def _assembly_rot_debug_metrics(
+        self,
+        current_rot: npt.NDArray[np.float32],
+        target_rot: npt.NDArray[np.float32],
+    ):
+        rel_rot = current_rot @ target_rot.T
+        trace = np.trace(rel_rot)
+        cos_angle = np.clip((trace - 1.0) / 2.0, -1.0, 1.0)
+        full_angle_rad = float(np.arccos(cos_angle))
+
+        if np.isclose(full_angle_rad, 0.0):
+            axis_angle = np.zeros(3, dtype=current_rot.dtype)
+        else:
+            axis = np.array(
+                [
+                    rel_rot[2, 1] - rel_rot[1, 2],
+                    rel_rot[0, 2] - rel_rot[2, 0],
+                    rel_rot[1, 0] - rel_rot[0, 1],
+                ],
+                dtype=current_rot.dtype,
+            ) / (2.0 * np.sin(full_angle_rad))
+            axis_angle = axis * full_angle_rad
+
+        ignore_z_axis_angle = axis_angle.copy()
+        ignore_z_axis_angle[1] = 0.0
+        ignore_z_angle_rad = float(np.linalg.norm(ignore_z_axis_angle))
+
+        column_cosines = []
+        for col_idx in range(3):
+            current_col = current_rot[:, col_idx]
+            target_col = target_rot[:, col_idx]
+            column_cosines.append(
+                float(
+                    np.dot(current_col, target_col)
+                    / (np.linalg.norm(current_col) * np.linalg.norm(target_col))
+                )
+            )
+
+        return (
+            full_angle_rad,
+            ignore_z_angle_rad,
+            axis_angle.tolist(),
+            ignore_z_axis_angle.tolist(),
+            column_cosines,
+        )
+
+    def _format_debug_value(self, value):
+        if isinstance(value, np.ndarray):
+            return self._format_debug_value(value.tolist())
+        if isinstance(value, (list, tuple)):
+            return "[" + ", ".join(self._format_debug_value(v) for v in value) + "]"
+        if isinstance(value, (np.bool_, bool)):
+            return str(bool(value))
+        if isinstance(value, (np.integer, int)):
+            return str(int(value))
+        if isinstance(value, (np.floating, float)):
+            return f"{float(value):.2f}"
+        return str(value)
+
+    def get_ignore_z_rot_axis(self, pair: Optional[Tuple[int, int]]) -> int:
+        if pair is None:
+            return 1
+        return int(self.ignore_z_rot_axis.get(pair, 1))
+
+    def _print_assembly_debug(
+        self,
+        pair: Optional[Tuple[int, int]],
+        rel_pose,
+        assembled_rel_pose,
+        pose_idx: int,
+        similar_rot: bool,
+        similar_pos: bool,
+        similar_pose: bool,
+        source: str,
+    ):
+        if not self.assembly_debug or pair is None:
+            return
+
+        part1_name = self.parts[pair[0]].name
+        part2_name = self.parts[pair[1]].name
+        current_pos = rel_pose[:3, 3]
+        target_pos = assembled_rel_pose[:3, 3]
+        pos_diff = current_pos - target_pos
+        abs_pos_diff = np.abs(pos_diff)
+        pos_threshold = np.asarray(self.assembled_pos_threshold, dtype=np.float32)
+        pos_within_threshold = (abs_pos_diff <= pos_threshold).tolist()
+
+        current_rot = rel_pose[:3, :3]
+        target_rot = assembled_rel_pose[:3, :3]
+        (
+            full_angle_rad,
+            ignore_z_angle_rad,
+            axis_angle,
+            ignore_z_axis_angle,
+            column_cosines,
+        ) = self._assembly_rot_debug_metrics(current_rot, target_rot)
+
+        use_position_only = pair in self.position_only
+        use_ignore_z_rot = pair in self.ignore_z_rot
+        ignore_z_rot_axis = self.get_ignore_z_rot_axis(pair)
+        if use_ignore_z_rot:
+            ignore_z_axis_angle[0] = axis_angle[0]
+            ignore_z_axis_angle[1] = axis_angle[1]
+            ignore_z_axis_angle[2] = axis_angle[2]
+            ignore_z_axis_angle[ignore_z_rot_axis] = 0.0
+            ignore_z_angle_rad = float(np.linalg.norm(ignore_z_axis_angle))
+        rot_threshold_rad = (
+            None
+            if use_position_only
+            else float(np.arccos(np.clip(self.ori_bound, -1.0, 1.0)))
+        )
+
+        print(
+            "[assembly_debug] "
+            f"furniture={self.name} "
+            f"source={source} "
+            f"pair=({part1_name},{part2_name}) "
+            f"target_pose_idx={pose_idx} "
+            f"mode={'position_only' if use_position_only else 'ignore_z_rot' if use_ignore_z_rot else 'full_rot'} "
+            f"ignore_axis={ignore_z_rot_axis if use_ignore_z_rot else 'n/a'} "
+            f"similar_rot={similar_rot} "
+            f"similar_pos={similar_pos} "
+            f"assembled={similar_pose}"
+        )
+        print(f"  current_rel_pos={self._format_debug_value(current_pos)}")
+        print(f"  target_rel_pos={self._format_debug_value(target_pos)}")
+        print(f"  rel_pos_diff={self._format_debug_value(pos_diff)}")
+        print(f"  abs_rel_pos_diff={self._format_debug_value(abs_pos_diff)}")
+        print(f"  pos_threshold={self._format_debug_value(pos_threshold)}")
+        print(f"  pos_within_threshold={self._format_debug_value(pos_within_threshold)}")
+        print(f"  current_rel_rot={self._format_debug_value(current_rot)}")
+        print(f"  target_rel_rot={self._format_debug_value(target_rot)}")
+        print(f"  rot_column_cosines={self._format_debug_value(column_cosines)}")
+        print(
+            f"  rot_full_angle_rad={self._format_debug_value(full_angle_rad)} "
+            f"rot_full_angle_deg={self._format_debug_value(np.degrees(full_angle_rad))}"
+        )
+        print(
+            "  rot_ignore_z_angle_rad="
+            f"{self._format_debug_value(ignore_z_angle_rad)} "
+            f"rot_ignore_z_angle_deg={self._format_debug_value(np.degrees(ignore_z_angle_rad))}"
+        )
+        print(f"  rel_axis_angle={self._format_debug_value(axis_angle)}")
+        print(
+            "  rel_axis_angle_ignore_z="
+            f"{self._format_debug_value(ignore_z_axis_angle)}"
+        )
+        if rot_threshold_rad is None:
+            print("  rot_threshold=position_only")
+        else:
+            print(
+                "  rot_threshold_rad="
+                f"{self._format_debug_value(rot_threshold_rad)} "
+                f"rot_threshold_deg={self._format_debug_value(np.degrees(rot_threshold_rad))} "
+                f"ori_bound={self._format_debug_value(self.ori_bound)}"
+            )
+
     def is_assembled_idx(
         self,
         part_idx1: int,
@@ -457,17 +620,39 @@ class Furniture(ABC):
             raise Exception("No relative pose!")
 
         pair = (part_idx1, part_idx2)
-        for assembled_rel_pose in assembled_rel_poses:
-            ori_bound = (
-                -1 if pair in self.position_only else self.ori_bound
+        for pose_idx, assembled_rel_pose in enumerate(assembled_rel_poses):
+            if pair in self.position_only:
+                similar_rot = True
+            elif pair in self.ignore_z_rot:
+                similar_rot = is_similar_rot_ignore_z(
+                    rel_pose[:3, :3],
+                    assembled_rel_pose[:3, :3],
+                    self.ori_bound,
+                    ignore_z_rot_axis=self.get_ignore_z_rot_axis(pair),
+                )
+            else:
+                similar_rot = is_similar_rot(
+                    rel_pose[:3, :3],
+                    assembled_rel_pose[:3, :3],
+                    self.ori_bound,
+                )
+            similar_pos = is_similar_pos(
+                rel_pose[:3, 3],
+                assembled_rel_pose[:3, 3],
+                self.assembled_pos_threshold,
             )
-            if is_similar_pose(
-                assembled_rel_pose,
-                rel_pose,
-                ori_bound=ori_bound,
-                pos_threshold=self.assembled_pos_threshold,
-                ignore_z_rot=pair in self.ignore_z_rot,
-            ):
+            similar_pose = similar_rot and similar_pos
+            self._print_assembly_debug(
+                pair=pair,
+                rel_pose=rel_pose,
+                assembled_rel_pose=assembled_rel_pose,
+                pose_idx=pose_idx,
+                similar_rot=similar_rot,
+                similar_pos=similar_pos,
+                similar_pose=similar_pose,
+                source="is_assembled_idx",
+            )
+            if similar_pose:
                 return True
 
         return False
@@ -478,19 +663,39 @@ class Furniture(ABC):
         assembled_rel_poses,
         pair: Optional[Tuple[int, int]] = None,
     ):
-        ori_bound = (
-            -1
-            if pair is not None and pair in self.position_only
-            else self.ori_bound
-        )
-        for assembled_rel_pose in assembled_rel_poses:
-            if is_similar_pose(
-                assembled_rel_pose,
-                rel_pose,
-                ori_bound=ori_bound,
-                pos_threshold=self.assembled_pos_threshold,
-                ignore_z_rot=pair in self.ignore_z_rot if pair is not None else False,
-            ):
+        for pose_idx, assembled_rel_pose in enumerate(assembled_rel_poses):
+            if pair is not None and pair in self.position_only:
+                similar_rot = True
+            elif pair is not None and pair in self.ignore_z_rot:
+                similar_rot = is_similar_rot_ignore_z(
+                    rel_pose[:3, :3],
+                    assembled_rel_pose[:3, :3],
+                    self.ori_bound,
+                    ignore_z_rot_axis=self.get_ignore_z_rot_axis(pair),
+                )
+            else:
+                similar_rot = is_similar_rot(
+                    rel_pose[:3, :3],
+                    assembled_rel_pose[:3, :3],
+                    self.ori_bound,
+                )
+            similar_pos = is_similar_pos(
+                rel_pose[:3, 3],
+                assembled_rel_pose[:3, 3],
+                self.assembled_pos_threshold,
+            )
+            similar_pose = similar_rot and similar_pos
+            self._print_assembly_debug(
+                pair=pair,
+                rel_pose=rel_pose,
+                assembled_rel_pose=assembled_rel_pose,
+                pose_idx=pose_idx,
+                similar_rot=similar_rot,
+                similar_pos=similar_pos,
+                similar_pose=similar_pose,
+                source="assembled",
+            )
+            if similar_pose:
                 return True
 
         return False
