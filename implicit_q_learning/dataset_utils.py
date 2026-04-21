@@ -87,38 +87,45 @@ class Dataset(object):
 
         if self.use_encoder:
             # Preprocess the image.
-            for i in indx:
-                obs_img1 = obs_img1.at[i].set(jnp.array(self.observations[i]['image1'] / 255.0))
-                obs_img1 = obs_img1.at[i, :, :, 0].add(-0.485)
-                obs_img1 = obs_img1.at[i, :, :, 1].add(-0.456)
-                obs_img1 = obs_img1.at[i, :, :, 2].add(-0.406)
-                obs_img1 = obs_img1.at[i, :, :, 0].divide(0.229)
-                obs_img1 = obs_img1.at[i, :, :, 1].divide(0.224)
-                obs_img1 = obs_img1.at[i, :, :, 2].divide(0.225)
+            # NOTE: `indx` holds dataset-level indices (range [0, self.size)), which
+            # must NOT be used to write into the batch-sized buffers above. JAX's
+            # `.at[i].set(...)` silently drops out-of-bounds writes, so when
+            # self.size > batch_size nearly all writes were dropped and the image
+            # batch was effectively all zeros — the bigger the dataset, the worse
+            # the signal. Iterate with `enumerate` so the batch index is separate
+            # from the dataset index.
+            for batch_i, i in enumerate(indx):
+                obs_img1 = obs_img1.at[batch_i].set(jnp.array(self.observations[i]['image1'] / 255.0))
+                obs_img1 = obs_img1.at[batch_i, :, :, 0].add(-0.485)
+                obs_img1 = obs_img1.at[batch_i, :, :, 1].add(-0.456)
+                obs_img1 = obs_img1.at[batch_i, :, :, 2].add(-0.406)
+                obs_img1 = obs_img1.at[batch_i, :, :, 0].divide(0.229)
+                obs_img1 = obs_img1.at[batch_i, :, :, 1].divide(0.224)
+                obs_img1 = obs_img1.at[batch_i, :, :, 2].divide(0.225)
 
-                obs_img2 = obs_img2.at[i].set(jnp.array(self.observations[i]['image2'] / 255.0))
-                obs_img2 = obs_img2.at[i, :, :, 0].add(-0.485)
-                obs_img2 = obs_img2.at[i, :, :, 1].add(-0.456)
-                obs_img2 = obs_img2.at[i, :, :, 2].add(-0.406)
-                obs_img2 = obs_img2.at[i, :, :, 0].divide(0.229)
-                obs_img2 = obs_img2.at[i, :, :, 1].divide(0.224)
-                obs_img2 = obs_img2.at[i, :, :, 2].divide(0.225)
+                obs_img2 = obs_img2.at[batch_i].set(jnp.array(self.observations[i]['image2'] / 255.0))
+                obs_img2 = obs_img2.at[batch_i, :, :, 0].add(-0.485)
+                obs_img2 = obs_img2.at[batch_i, :, :, 1].add(-0.456)
+                obs_img2 = obs_img2.at[batch_i, :, :, 2].add(-0.406)
+                obs_img2 = obs_img2.at[batch_i, :, :, 0].divide(0.229)
+                obs_img2 = obs_img2.at[batch_i, :, :, 1].divide(0.224)
+                obs_img2 = obs_img2.at[batch_i, :, :, 2].divide(0.225)
 
-                next_obs_img1 = next_obs_img1.at[i].set(jnp.array(self.next_observations[i]['image1'] / 255.0))
-                next_obs_img1 = next_obs_img1.at[i, :, :, 0].add(-0.485)
-                next_obs_img1 = next_obs_img1.at[i, :, :, 1].add(-0.456)
-                next_obs_img1 = next_obs_img1.at[i, :, :, 2].add(-0.406)
-                next_obs_img1 = next_obs_img1.at[i, :, :, 0].divide(0.229)
-                next_obs_img1 = next_obs_img1.at[i, :, :, 1].divide(0.224)
-                next_obs_img1 = next_obs_img1.at[i, :, :, 2].divide(0.225)
+                next_obs_img1 = next_obs_img1.at[batch_i].set(jnp.array(self.next_observations[i]['image1'] / 255.0))
+                next_obs_img1 = next_obs_img1.at[batch_i, :, :, 0].add(-0.485)
+                next_obs_img1 = next_obs_img1.at[batch_i, :, :, 1].add(-0.456)
+                next_obs_img1 = next_obs_img1.at[batch_i, :, :, 2].add(-0.406)
+                next_obs_img1 = next_obs_img1.at[batch_i, :, :, 0].divide(0.229)
+                next_obs_img1 = next_obs_img1.at[batch_i, :, :, 1].divide(0.224)
+                next_obs_img1 = next_obs_img1.at[batch_i, :, :, 2].divide(0.225)
 
-                next_obs_img2 = next_obs_img2.at[i].set(jnp.array(self.next_observations[i]['image2'] / 255.0))
-                next_obs_img2 = next_obs_img2.at[i, :, :, 0].add(-0.485)
-                next_obs_img2 = next_obs_img2.at[i, :, :, 1].add(-0.456)
-                next_obs_img2 = next_obs_img2.at[i, :, :, 2].add(-0.406)
-                next_obs_img2 = next_obs_img2.at[i, :, :, 0].divide(0.229)
-                next_obs_img2 = next_obs_img2.at[i, :, :, 1].divide(0.224)
-                next_obs_img2 = next_obs_img2.at[i, :, :, 2].divide(0.225)
+                next_obs_img2 = next_obs_img2.at[batch_i].set(jnp.array(self.next_observations[i]['image2'] / 255.0))
+                next_obs_img2 = next_obs_img2.at[batch_i, :, :, 0].add(-0.485)
+                next_obs_img2 = next_obs_img2.at[batch_i, :, :, 1].add(-0.456)
+                next_obs_img2 = next_obs_img2.at[batch_i, :, :, 2].add(-0.406)
+                next_obs_img2 = next_obs_img2.at[batch_i, :, :, 0].divide(0.229)
+                next_obs_img2 = next_obs_img2.at[batch_i, :, :, 1].divide(0.224)
+                next_obs_img2 = next_obs_img2.at[batch_i, :, :, 2].divide(0.225)
 
                 # self.next_observations[i][img] = self.next_observations[i][img] / 255.0
                 # self.next_observations[i][img][:, :, 0] = (self.next_observations[i][img][:, :, 0] - 0.485) / 0.229
