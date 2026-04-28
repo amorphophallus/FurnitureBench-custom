@@ -1064,6 +1064,30 @@ class FurnitureSimEnv(gym.Env):
             self.isaac_gym.sync_frame_time(self.sim)
             self.isaac_gym.clear_lines(self.viewer)
 
+    def apply_end_effector_force(self, forces: torch.Tensor):
+        """Apply global-space forces to each environment's end-effector body."""
+        if not torch.is_tensor(forces):
+            forces = torch.as_tensor(forces, dtype=torch.float32, device=self.device)
+        forces = forces.to(device=self.device, dtype=torch.float32)
+        expected_shape = (self.num_envs, 3)
+        if tuple(forces.shape) != expected_shape:
+            raise ValueError(
+                f"End-effector forces must have shape {expected_shape}, "
+                f"got {tuple(forces.shape)}"
+            )
+
+        all_forces = torch.zeros((self.rigid_body_count, 3), device=self.device)
+        all_torques = torch.zeros((self.rigid_body_count, 3), device=self.device)
+        ee_idxs = torch.as_tensor(self.ee_idxs, device=self.device, dtype=torch.long)
+        all_forces[ee_idxs] = forces
+
+        self.isaac_gym.apply_rigid_body_force_tensors(
+            self.sim,
+            gymtorch.unwrap_tensor(all_forces),
+            gymtorch.unwrap_tensor(all_torques),
+            gymapi.GLOBAL_SPACE,
+        )
+
     def _reward(self):
         """Reward is 1 if two parts are assembled."""
         rewards = torch.zeros(
