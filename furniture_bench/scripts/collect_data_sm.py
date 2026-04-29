@@ -69,6 +69,36 @@ def main():
         help="If set, will not show the laser coming from the end effector",
         dest="ee_laser",
     )
+    parser.add_argument(
+        "--sm-pos-speed",
+        type=float,
+        default=None,
+        help=(
+            "Override SpaceMouse max translational speed in meters per second. "
+            "Defaults: 0.3 for diffik, 0.8 for osc."
+        ),
+    )
+    parser.add_argument(
+        "--sm-rot-speed",
+        type=float,
+        default=None,
+        help=(
+            "Override SpaceMouse max rotational speed in radians per second. "
+            "Defaults: 0.7 for diffik, 4.0 for osc."
+        ),
+    )
+    parser.add_argument(
+        "--teleop-setting",
+        type=int,
+        choices=[1, 2],
+        default=1,
+        help=(
+            "Teleoperation preset. Both settings show enlarged color_image2 "
+            "and color_image1. 1: world-frame position/rotation control. "
+            "2: end-effector-frame position/rotation control, use EE rotation "
+            "signs [x=+1, y=-1, z=-1], and reverse EE x/z translation."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -96,7 +126,10 @@ def main():
         save_failure=args.save_failure,
         num_demos=args.num_demos,
         ctrl_mode=args.ctrl_mode,
-        ee_laser=args.ee_laser
+        ee_laser=args.ee_laser,
+        sm_pos_speed=args.sm_pos_speed,
+        sm_rot_speed=args.sm_rot_speed,
+        teleop_setting=args.teleop_setting,
     )
     data_collector.collect()
 

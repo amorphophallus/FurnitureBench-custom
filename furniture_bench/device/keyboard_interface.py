@@ -47,10 +47,16 @@ class KeyboardInterface(DeviceInterface):
         self.rew_key = 0
 
         self.key_enum = CollectEnum.DONE_FALSE
+        self.start_requested = False
+        self.waiting_for_start = False
 
     def on_press(self, k):
         try:
             k = k.char
+
+            if self.waiting_for_start and k == "s":
+                self.start_requested = True
+                return
 
             # Moving arm.
             if k in KeyboardInterface.ACTIONS:
@@ -170,6 +176,18 @@ class KeyboardInterface(DeviceInterface):
             ret = np.concatenate([dpos, dori, self.grasp]), self.key_enum
         self.key_enum = CollectEnum.DONE_FALSE
         return ret
+
+    def consume_start_signal(self):
+        start_requested = self.start_requested
+        self.start_requested = False
+        return start_requested
+
+    def begin_start_wait(self):
+        self.start_requested = False
+        self.waiting_for_start = True
+
+    def end_start_wait(self):
+        self.waiting_for_start = False
 
     def print_usage(self):
         print("==============Keyboard Usage=================")

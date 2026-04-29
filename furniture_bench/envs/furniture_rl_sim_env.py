@@ -1537,6 +1537,25 @@ class FurnitureSimEnv(gym.Env):
         for i in range(self.num_envs):
             self.reset_env_to(i, state[i])
 
+        if (
+            hasattr(self, "already_assembled")
+            or hasattr(self, "consecutive_assembled_steps")
+            or getattr(self, "furniture_name", None) == "lamp"
+        ):
+            env_idxs = torch.arange(
+                self.num_envs, device=self.device, dtype=torch.int32
+            )
+
+        if hasattr(self, "already_assembled"):
+            self.already_assembled[env_idxs] = 0
+        if hasattr(self, "consecutive_assembled_steps"):
+            self.consecutive_assembled_steps[env_idxs] = 0
+
+        if getattr(self, "furniture_name", None) == "lamp" and hasattr(
+            self, "_reset_lamp_bulb_state"
+        ):
+            self._reset_lamp_bulb_state(env_idxs)
+
     def reset_env_to(self, env_idx, state):
         """Reset to a specific state. **MUST refresh in between multiple calls
         to this function to have changes properly reflected in each environment.
@@ -2070,6 +2089,24 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
         )
         self.assembly_confirm_frames = 3
 
+    def _reset_lamp_bulb_state(self, env_idxs: torch.Tensor):
+        """Keep lamp bulb rest-pose bookkeeping consistent across reset paths."""
+        if self.furniture_name != "lamp":
+            return
+
+        env_idxs = env_idxs.to(device=self.device, dtype=torch.int32)
+
+        for _ in range(10):
+            self.refresh()
+
+        lb_poses = self.rb_states[self.lamp_bulb_rb_indices, :7]
+        self.lb_rest_poses = lb_poses.reshape(self.num_envs, 7)
+
+        self._set_bulb_poses(env_idxs=env_idxs)
+        self._moving_bulbs = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+
     def _format_debug_value(self, value):
         if isinstance(value, torch.Tensor):
             return self._format_debug_value(value.detach().cpu().tolist())
@@ -2221,15 +2258,7 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
 
         # if we are using the lamp, get the reset pose and start setting the state
         if self.furniture_name == "lamp":
-            for _ in range(10):
-                self.refresh()
-            lb_poses = self.rb_states[self.lamp_bulb_rb_indices, :7]
-            self.lb_rest_poses = lb_poses.reshape(self.num_envs, 7)
-
-            self._set_bulb_poses(env_idxs=env_idxs)
-            self._moving_bulbs = torch.tensor(
-                [False] * self.num_envs, dtype=torch.bool, device=self.device
-            )
+            self._reset_lamp_bulb_state(env_idxs)
 
         self.refresh()
 
