@@ -3,6 +3,7 @@
 import gym
 import numpy as np
 from pynput.keyboard import Key, Listener
+from threading import Lock
 
 from furniture_bench.device.device_interface import DeviceInterface
 from furniture_bench.data.collect_enum import CollectEnum
@@ -30,6 +31,8 @@ class KeyboardInterface(DeviceInterface):
     intr_z_limit = (-15, 17)
 
     def __init__(self):
+        self._start_signal_lock = Lock()
+        self._start_signal_count = 0
         self.reset()
 
         # Make a thread to listen to keyboard and register callback functions.
@@ -47,15 +50,20 @@ class KeyboardInterface(DeviceInterface):
         self.rew_key = 0
 
         self.key_enum = CollectEnum.DONE_FALSE
-        self.start_requested = False
         self.waiting_for_start = False
+        with self._start_signal_lock:
+            self._start_signal_count = 0
 
     def on_press(self, k):
         try:
             k = k.char
+            if k is None:
+                return
+            k = k.lower()
 
             if self.waiting_for_start and k == "s":
-                self.start_requested = True
+                with self._start_signal_lock:
+                    self._start_signal_count += 1
                 return
 
             # Moving arm.
@@ -178,13 +186,16 @@ class KeyboardInterface(DeviceInterface):
         return ret
 
     def consume_start_signal(self):
-        start_requested = self.start_requested
-        self.start_requested = False
-        return start_requested
+        with self._start_signal_lock:
+            if self._start_signal_count > 0:
+                self._start_signal_count -= 1
+                return True
+        return False
 
     def begin_start_wait(self):
-        self.start_requested = False
         self.waiting_for_start = True
+        with self._start_signal_lock:
+            self._start_signal_count = 0
 
     def end_start_wait(self):
         self.waiting_for_start = False

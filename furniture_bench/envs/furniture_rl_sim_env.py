@@ -2012,6 +2012,9 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
         elif self.furniture_name == "square_table":
             force_mul = [25, 1, 1, 1, 1]
             torque_mul = [70, 1, 1, 1, 1]
+        elif self.furniture_name == "desk":
+            force_mul = [25, 1, 1, 1, 1]
+            torque_mul = [70, 1, 1, 1, 1]
         elif self.furniture_name == "mug_rack":
             force_mul = [50, 20]
             torque_mul = [150, 30]
@@ -2022,20 +2025,12 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
             force_mul = [0.001, 0.001]
             torque_mul = [0.001, 0.001]
         else:
-            raise ValueError(
-                f"Have not set up the random force/torque multipliers for furniture {self.furniture_name}"
+            force_mul = [1.0] * len(self.furniture.parts)
+            torque_mul = [1.0] * len(self.furniture.parts)
+            print(
+                f"[WARN] Using default random force/torque multipliers for furniture {self.furniture_name}: "
+                f"{len(self.furniture.parts)} parts"
             )
-        # TODO - something like this (tricky to get right due to one_leg/square_table inheritance)
-        # force_mul = [
-        #     config["furniture"][self.furniture_name][part.name]["rand_force_multiplier"]
-        #     for part in self.furniture.parts
-        # ]
-        # torque_mul = [
-        #     config["furniture"][self.furniture_name][part.name][
-        #         "rand_torque_multiplier"
-        #     ]
-        #     for part in self.furniture.parts
-        # ]
         print(f"Force multiplier: {force_mul}")
         print(f"Torque multiplier: {torque_mul}")
         self.force_multiplier = torch.tensor(force_mul, device=self.device).unsqueeze(
@@ -2054,6 +2049,8 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
             self.pairs_to_assemble = [(0, 1), (1, 2)]
         elif self.furniture_name == "square_table":
             self.pairs_to_assemble = [(0, 1), (0, 2), (0, 3), (0, 4)]
+        elif self.furniture_name == "desk":
+            self.pairs_to_assemble = [(0, 1), (0, 2), (0, 3), (0, 4)]
         elif self.furniture_name == "mug_rack":
             self.pairs_to_assemble = [(0, 1)]
         elif self.furniture_name == "factory_peg_hole":
@@ -2061,8 +2058,14 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
         elif self.furniture_name == "factory_nut_bolt":
             self.pairs_to_assemble = [(0, 1)]
         else:
-            raise ValueError(
-                f"Have not set up the pairs to assemble for furniture {self.furniture_name}"
+            self.pairs_to_assemble = sorted(self.furniture.assembled_rel_poses.keys())
+            if not self.pairs_to_assemble:
+                raise ValueError(
+                    f"Have not set up the pairs to assemble for furniture {self.furniture_name}"
+                )
+            print(
+                f"[WARN] Using assembled_rel_poses keys as reward pairs for furniture {self.furniture_name}: "
+                f"{self.pairs_to_assemble}"
             )
 
         rel_poses_arr = np.asarray(
