@@ -1556,6 +1556,18 @@ class FurnitureSimEnv(gym.Env):
         ):
             self._reset_lamp_bulb_state(env_idxs)
 
+        # Propagate changes to simulation (required for RL env tensor batching)
+        if hasattr(self, "isaac_gym") and hasattr(self, "root_tensor"):
+            env_idxs_all = torch.arange(
+                self.num_envs, device=self.device, dtype=torch.int32
+            )
+            self.isaac_gym.set_actor_root_state_tensor_indexed(
+                self.sim,
+                gymtorch.unwrap_tensor(self.root_tensor),
+                gymtorch.unwrap_tensor(env_idxs_all),
+                len(env_idxs_all),
+            )
+
     def reset_env_to(self, env_idx, state):
         """Reset to a specific state. **MUST refresh in between multiple calls
         to this function to have changes properly reflected in each environment.
@@ -1698,14 +1710,25 @@ class FurnitureSimEnv(gym.Env):
         obstacle_right_offset = gymapi.Vec3(-0.075, -0.175, 0)
         obstacle_left_offset = gymapi.Vec3(-0.075, 0.175, 0)
 
-        # Write the obstacle poses to the root_pos and root_quat tensors
-        self.root_pos[env_idx, self.part_idxs["obstacle_front"]] = torch.tensor(
+        # Write the obstacle poses to the root_pos and root_quat tensors.
+        # Use obstacle_handles (local per-env indices) if available (RL env),
+        # otherwise fall back to part_idxs (global indices, base sim env).
+        if hasattr(self, "obstacle_handles") and len(self.obstacle_handles) >= 3:
+            obs_front_idx = self.obstacle_handles[0]
+            obs_right_idx = self.obstacle_handles[1]
+            obs_left_idx = self.obstacle_handles[2]
+        else:
+            obs_front_idx = self.part_idxs["obstacle_front"]
+            obs_right_idx = self.part_idxs["obstacle_right"]
+            obs_left_idx = self.part_idxs["obstacle_left"]
+
+        self.root_pos[env_idx, obs_front_idx] = torch.tensor(
             [obstacle_pose.p.x, obstacle_pose.p.y, obstacle_pose.p.z],
             device=self.device,
             dtype=torch.float32,
         )
 
-        self.root_pos[env_idx, self.part_idxs["obstacle_right"]] = torch.tensor(
+        self.root_pos[env_idx, obs_right_idx] = torch.tensor(
             [
                 obstacle_pose.p.x + obstacle_right_offset.x,
                 obstacle_pose.p.y + obstacle_right_offset.y,
@@ -1715,7 +1738,7 @@ class FurnitureSimEnv(gym.Env):
             dtype=torch.float32,
         )
 
-        self.root_pos[env_idx, self.part_idxs["obstacle_left"]] = torch.tensor(
+        self.root_pos[env_idx, obs_left_idx] = torch.tensor(
             [
                 obstacle_pose.p.x + obstacle_left_offset.x,
                 obstacle_pose.p.y + obstacle_left_offset.y,
