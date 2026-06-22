@@ -115,7 +115,9 @@ class Leg(Part):
         )
         leg_pose = sim_to_april_mat @ leg_pose
         leg_pose_robot = april_to_robot @ leg_pose
-        return leg_pose_robot[:3, 3].clone()
+        # Offset 1/4 leg length along local Y (long axis)
+        y_offset = leg_pose_robot[:3, 1] * (self.reset_y_len * 0.25)
+        return (leg_pose_robot[:3, 3] + y_offset).clone()
 
     def _find_leg_pose_x_look_front_skill(self, leg_pose, device):
         best_leg_pose = leg_pose.clone()
@@ -149,9 +151,9 @@ class Leg(Part):
         leg_pose = sim_to_april_mat @ leg_pose
         leg_pose_robot = april_to_robot @ leg_pose
         leg_pose_robot = self._find_leg_pose_x_look_front_skill(leg_pose_robot, device)
+        table_pose_robot = april_to_robot @ table_pose
         table_hole_pose_robot = (
-            april_to_robot
-            @ table_pose
+            table_pose_robot
             @ torch.tensor(
                 get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
                 device=device,
@@ -161,7 +163,7 @@ class Leg(Part):
             [
                 [1.0, 0.0, 0.0, table_hole_pose_robot[0, 3]],
                 [0.0, 0.0, -1.0, table_hole_pose_robot[1, 3]],
-                [0.0, 1.0, 0.0, table_pose[2, 3] + 0.09],
+                [0.0, 1.0, 0.0, table_pose_robot[2, 3] + 0.09],
                 [0.0, 0.0, 0.0, 1.0],
             ],
             device=device,

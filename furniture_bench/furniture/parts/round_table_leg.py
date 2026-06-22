@@ -96,9 +96,9 @@ class RoundTableLeg(Leg):
         leg_pose = sim_to_april_mat @ leg_pose
         leg_pose_robot = april_to_robot @ leg_pose
         leg_pose_robot = self._find_leg_pose_x_look_front_skill(leg_pose_robot, device)
+        base_pose_robot = april_to_robot @ base_pose
         base_hole_pose_robot = (
-            april_to_robot
-            @ base_pose
+            base_pose_robot
             @ torch.tensor(
                 get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
                 device=device,
@@ -108,7 +108,7 @@ class RoundTableLeg(Leg):
             [
                 [1.0, 0.0, 0.0, base_hole_pose_robot[0, 3]],
                 [0.0, 0.0, -1.0, base_hole_pose_robot[1, 3]],
-                [0.0, 1.0, 0.0, base_pose[2, 3] + 0.09],
+                [0.0, 1.0, 0.0, base_pose_robot[2, 3] + 0.09],
                 [0.0, 0.0, 0.0, 1.0],
             ],
             device=device,
