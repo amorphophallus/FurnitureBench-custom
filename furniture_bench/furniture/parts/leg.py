@@ -246,14 +246,10 @@ class Leg(Part):
                 )
                 self.skill_guidance_point = self.skill_target[:3, 3].clone()
         elif self.skill_state == "place":
-            self.skill_target = self._compute_skill_place_target(
-                ee_pose,
-                rb_states,
-                part_idxs,
-                sim_to_april_mat,
-                april_to_robot,
-                assemble_to,
-            )
+            # skill_target was already computed at pick→place transition.
+            # Do NOT recompute: _find_leg_pose_x_look_front_skill may pick a
+            # different discrete orientation as the leg rotates, causing the
+            # 3D guidance point to jump.
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
             xy_error = (
                 ee_pose[:2, 3] - self.skill_target[:2, 3]

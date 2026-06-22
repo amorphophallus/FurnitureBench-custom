@@ -260,50 +260,35 @@ class RoundTableLeg(Leg):
                 )
                 self.skill_guidance_point = self.skill_target[:3, 3].clone()
         elif self.skill_state == "place":
-            self.skill_target = self._compute_skill_place_target(
-                ee_pose,
-                rb_states,
-                part_idxs,
-                sim_to_april_mat,
-                april_to_robot,
-                assemble_to,
-            )
+            # skill_target was already computed at pick→place transition.
+            # Do NOT recompute: _find_leg_pose_x_look_front_skill may pick a
+            # different discrete orientation as the leg rotates, causing the
+            # 3D guidance point to jump (Δ ≈ 1-2 cm).
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
             xy_error = (ee_pose[:2, 3] - self.skill_target[:2, 3]).abs().sum()
             z_error = (ee_pose[2, 3] - self.skill_target[2, 3]).abs()
             ori_error = self._ori_error_no_yaw(
                 ee_pose[:3, :3], self.skill_target[:3, :3]
             )
-            place_ok = (
-                xy_error < self.skill_place_xy_threshold
-                and z_error < self.skill_place_z_threshold
-                and ori_error < self.skill_place_ori_threshold
-            )
-            # print(
-            #     "[round_table_leg place_debug] "
-            #     f"xy_error={xy_error.item():.6f} "
-            #     f"xy_thresh={self.skill_place_xy_threshold:.6f} "
-            #     f"z_error={z_error.item():.6f} "
-            #     f"z_thresh={self.skill_place_z_threshold:.6f} "
-            #     f"ori_error_no_yaw={ori_error.item():.6f} "
-            #     f"ori_thresh={self.skill_place_ori_threshold:.6f} "
-            #     f"place_ok={place_ok}"
-            # )
             if (
                 xy_error < self.skill_place_xy_threshold
                 and z_error < self.skill_place_z_threshold
                 and ori_error < self.skill_place_ori_threshold
             ):
                 self.skill_state = "insert"
+                # Compute insert target once at transition (not every frame).
+                self.skill_target = self._compute_skill_insert_target(
+                    ee_pose,
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                    assemble_to,
+                )
+                self.skill_guidance_point = self.skill_target[:3, 3].clone()
         elif self.skill_state == "insert":
-            self.skill_target = self._compute_skill_insert_target(
-                ee_pose,
-                rb_states,
-                part_idxs,
-                sim_to_april_mat,
-                april_to_robot,
-                assemble_to,
-            )
+            # Use cached skill_target from place→insert transition.
+            # Do NOT recompute every frame — the target hole does not move.
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
             if (
                 gripper_width
