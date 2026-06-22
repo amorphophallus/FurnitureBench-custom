@@ -76,6 +76,7 @@ class TableTop(Part):
         sim_to_april_mat,
         april_to_robot,
     ):
+        """Compute the target *EE pose* for the push skill (annotation guidance)."""
         device = ee_pose.device
         target_pos = torch.zeros((4,), device=device)
         target_pos[-1] = 1
@@ -186,11 +187,32 @@ class TableTop(Part):
                     april_to_robot,
                 )
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
-            if self.satisfy(
-                ee_pose,
-                self.skill_target,
-                pos_error_threshold=0.05,
-                ori_error_threshold=1,  # 对orientation要求不高，因为push过程中可能会有较大旋转
+            # Check whether the *table* (not the EE) has reached the corner.
+            # Compute table center target independently from the EE guidance target.
+            table_pos_sim_local = rb_states[part_idxs[self.name]][0][:3]
+            table_pos_robot = (
+                april_to_robot
+                @ sim_to_april_mat
+                @ torch.cat(
+                    [table_pos_sim_local, torch.ones(1, device=ee_pos.device)]
+                )
+            )[:3]
+            # Table center target = corner xy - half_width
+            corner = torch.zeros((4,), device=ee_pos.device)
+            corner[-1] = 1
+            for name in ["obstacle_front", "obstacle_right", "obstacle_left"]:
+                obs = torch.cat([
+                    rb_states[part_idxs[name]][0][:3],
+                    torch.tensor([1.0], device=ee_pos.device),
+                ])
+                corner[0] = max(obs[0], corner[0])
+                corner[1] = max(obs[1], corner[1])
+            table_center_target_robot = (april_to_robot @ sim_to_april_mat @ corner)[:3]
+            table_center_target_robot[0] -= self.half_width
+            table_center_target_robot[1] -= self.half_width
+            if (
+                (table_pos_robot[:2] - table_center_target_robot[:2]).abs().sum()
+                < 0.03
             ):
                 self.skill_state = "done"
 
