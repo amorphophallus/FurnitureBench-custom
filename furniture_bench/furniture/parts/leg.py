@@ -89,18 +89,18 @@ class Leg(Part):
         sim_to_april_mat,
         april_to_robot,
     ):
-        leg_pose = C.to_homogeneous(
+        leg_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        leg_pose = sim_to_april_mat @ leg_pose
-        leg_pose = self._find_down_z(leg_pose).clone().to(ee_pose.device)
-        pos = leg_pose[:4, 3]
-        target_pos = (april_to_robot @ pos)[:3]
-        target_pos[1] += 0.01
-        target_pos[0] += self.grasp_margin_x
-        target_pos[2] = (april_to_robot @ leg_pose)[2, 3]
-        return target_pos
+        leg_pose_april = sim_to_april_mat @ leg_pose_env
+        leg_pose_april = self._find_down_z(leg_pose_april).clone().to(ee_pose.device)
+        pos_april = leg_pose_april[:4, 3]
+        target_pos_robot = (april_to_robot @ pos_april)[:3]
+        target_pos_robot[1] += 0.01
+        target_pos_robot[0] += self.grasp_margin_x
+        target_pos_robot[2] = (april_to_robot @ leg_pose_april)[2, 3]
+        return target_pos_robot
 
     def _compute_skill_screw_target(
         self,
@@ -109,49 +109,50 @@ class Leg(Part):
         sim_to_april_mat,
         april_to_robot,
     ):
-        leg_pose = C.to_homogeneous(
+        leg_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        leg_pose = sim_to_april_mat @ leg_pose
-        leg_pose_robot = april_to_robot @ leg_pose
+        leg_pose_april = sim_to_april_mat @ leg_pose_env
+        leg_pose_robot = april_to_robot @ leg_pose_april
         # Offset 1/4 leg length along local Y (long axis)
-        y_offset = leg_pose_robot[:3, 1] * (self.reset_y_len * 0.25)
-        return (leg_pose_robot[:3, 3] + y_offset).clone()
+        y_offset_robot = leg_pose_robot[:3, 1] * (self.reset_y_len * 0.25)
+        return (leg_pose_robot[:3, 3] + y_offset_robot).clone()
 
-    def _find_leg_pose_x_look_front_skill(self, leg_pose, device):
-        best_leg_pose = leg_pose.clone()
-        tmp_leg_pose = leg_pose
+    def _find_leg_pose_x_look_front_skill(self, leg_pose_robot, device):
+        best_leg_pose_robot = leg_pose_robot.clone()
+        tmp_leg_pose_robot = leg_pose_robot
         rot = torch.tensor(rot_mat([0, -np.pi / 2, 0], hom=True), device=device).float()
         for _ in range(3):
-            tmp_leg_pose = tmp_leg_pose @ rot
-            if best_leg_pose[0, 0] < tmp_leg_pose[0, 0]:
-                best_leg_pose = tmp_leg_pose
-        return best_leg_pose
+            tmp_leg_pose_robot = tmp_leg_pose_robot @ rot
+            if best_leg_pose_robot[0, 0] < tmp_leg_pose_robot[0, 0]:
+                best_leg_pose_robot = tmp_leg_pose_robot
+        return best_leg_pose_robot
 
     def _compute_skill_place_target(
         self,
-        ee_pose,
+        ee_pose_robot,
         rb_states,
         part_idxs,
         sim_to_april_mat,
         april_to_robot,
         assemble_to,
     ):
-        device = ee_pose.device
-        table_pose = C.to_homogeneous(
+        device = ee_pose_robot.device
+        # rb_states positions are in env-local frame
+        table_pose_env = C.to_homogeneous(
             rb_states[part_idxs[assemble_to]][0][:3],
             C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
         )
-        leg_pose = C.to_homogeneous(
+        leg_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        table_pose = sim_to_april_mat @ table_pose
-        leg_pose = sim_to_april_mat @ leg_pose
-        leg_pose_robot = april_to_robot @ leg_pose
+        table_pose_april = sim_to_april_mat @ table_pose_env
+        leg_pose_april = sim_to_april_mat @ leg_pose_env
+        leg_pose_robot = april_to_robot @ leg_pose_april
         leg_pose_robot = self._find_leg_pose_x_look_front_skill(leg_pose_robot, device)
-        table_pose_robot = april_to_robot @ table_pose
+        table_pose_robot = april_to_robot @ table_pose_april
         table_hole_pose_robot = (
             table_pose_robot
             @ torch.tensor(
@@ -168,8 +169,26 @@ class Leg(Part):
             ],
             device=device,
         )
-        rel = target_leg_pose_robot @ torch.linalg.inv(leg_pose_robot)
-        return rel @ ee_pose
+        rel_robot = target_leg_pose_robot @ torch.linalg.inv(leg_pose_robot)
+        target_ee_pose_robot = rel_robot @ ee_pose_robot
+        # [DEBUG] trace place target z
+        print(
+            f"[place-target-z] "
+            f"table_env_z={table_pose_env[2,3].item():.4f} "
+            f"table_april_z={table_pose_april[2,3].item():.4f} "
+            f"table_robot_z={table_pose_robot[2,3].item():.4f} "
+            f"hole_robot_z={table_hole_pose_robot[2,3].item():.4f} "
+            f"target_leg_z={target_leg_pose_robot[2,3].item():.4f} "
+            f"leg_robot_z={leg_pose_robot[2,3].item():.4f} "
+            f"ee_robot_z={ee_pose_robot[2,3].item():.4f} "
+            f"result_z={target_ee_pose_robot[2,3].item():.4f} "
+            f"table_hole_xy_robot=({table_hole_pose_robot[0,3].item():.4f},"
+            f"{table_hole_pose_robot[1,3].item():.4f}) "
+            f"table_xy_env=({table_pose_env[0,3].item():.4f},"
+            f"{table_pose_env[1,3].item():.4f})",
+            flush=True,
+        )
+        return target_ee_pose_robot
 
     def update_skill_state(
         self,
@@ -188,7 +207,7 @@ class Leg(Part):
         assemble_to,
         assembled=False,
     ):
-        ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
+        ee_pose_robot = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
         table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
         grasp_axis = right_finger_pos - left_finger_pos
         grasp_axis[2] = 0.0
@@ -197,7 +216,7 @@ class Leg(Part):
 
         if self.skill_state == "pick":
             self.skill_guidance_point = self._compute_skill_pick_target(
-                ee_pose,
+                ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
@@ -239,7 +258,7 @@ class Leg(Part):
             if self.skill_pinched_steps >= 2:
                 self.skill_state = "place"
                 self.skill_target = self._compute_skill_place_target(
-                    ee_pose,
+                    ee_pose_robot,
                     rb_states,
                     part_idxs,
                     sim_to_april_mat,
@@ -254,11 +273,11 @@ class Leg(Part):
             # 3D guidance point to jump.
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
             xy_error = (
-                ee_pose[:2, 3] - self.skill_target[:2, 3]
+                ee_pose_robot[:2, 3] - self.skill_target[:2, 3]
             ).abs().sum()
-            z_error = (ee_pose[2, 3] - self.skill_target[2, 3]).abs()
+            z_error = (ee_pose_robot[2, 3] - self.skill_target[2, 3]).abs()
             ori_error = self._ori_error_no_yaw(
-                ee_pose[:3, :3], self.skill_target[:3, :3]
+                ee_pose_robot[:3, :3], self.skill_target[:3, :3]
             )
             if (
                 xy_error < self.skill_place_xy_threshold

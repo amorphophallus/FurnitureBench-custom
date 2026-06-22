@@ -42,27 +42,27 @@ class RoundTableLeg(Leg):
 
     def _compute_skill_pick_target(
         self,
-        ee_pose,
+        ee_pose_robot,
         rb_states,
         part_idxs,
         sim_to_april_mat,
         april_to_robot,
     ):
-        leg_pose = C.to_homogeneous(
+        leg_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        leg_pose = sim_to_april_mat @ leg_pose
-        leg_pose = self._find_down_z(leg_pose).clone().to(ee_pose.device)
-        leg_pose = (
-            torch.tensor(get_mat([0, 0.043, 0], [0, 0, 0]), device=ee_pose.device)
-            @ leg_pose
+        leg_pose_april = sim_to_april_mat @ leg_pose_env
+        leg_pose_april = self._find_down_z(leg_pose_april).clone().to(ee_pose_robot.device)
+        leg_pose_april = (
+            torch.tensor(get_mat([0, 0.043, 0], [0, 0, 0]), device=ee_pose_robot.device)
+            @ leg_pose_april
         )
-        pos = leg_pose[:4, 3]
-        target_pos = (april_to_robot @ pos)[:3]
-        target_pos[2] = ee_pose[2, 3]
-        target_ori = ee_pose[:3, :3]
-        return C.to_homogeneous(target_pos, target_ori)
+        pos_april = leg_pose_april[:4, 3]
+        target_pos_robot = (april_to_robot @ pos_april)[:3]
+        target_pos_robot[2] = ee_pose_robot[2, 3]
+        target_ori_robot = ee_pose_robot[:3, :3]
+        return C.to_homogeneous(target_pos_robot, target_ori_robot)
 
     def _find_leg_pose_x_look_front_skill(self, leg_pose, device):
         best_leg_pose = leg_pose.clone()
@@ -76,27 +76,27 @@ class RoundTableLeg(Leg):
 
     def _compute_skill_place_target(
         self,
-        ee_pose,
+        ee_pose_robot,
         rb_states,
         part_idxs,
         sim_to_april_mat,
         april_to_robot,
         assemble_to,
     ):
-        device = ee_pose.device
-        base_pose = C.to_homogeneous(
+        device = ee_pose_robot.device
+        base_pose_env = C.to_homogeneous(
             rb_states[part_idxs[assemble_to]][0][:3],
             C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
         )
-        leg_pose = C.to_homogeneous(
+        leg_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        base_pose = sim_to_april_mat @ base_pose
-        leg_pose = sim_to_april_mat @ leg_pose
-        leg_pose_robot = april_to_robot @ leg_pose
+        base_pose_april = sim_to_april_mat @ base_pose_env
+        leg_pose_april = sim_to_april_mat @ leg_pose_env
+        leg_pose_robot = april_to_robot @ leg_pose_april
         leg_pose_robot = self._find_leg_pose_x_look_front_skill(leg_pose_robot, device)
-        base_pose_robot = april_to_robot @ base_pose
+        base_pose_robot = april_to_robot @ base_pose_april
         base_hole_pose_robot = (
             base_pose_robot
             @ torch.tensor(
@@ -113,48 +113,48 @@ class RoundTableLeg(Leg):
             ],
             device=device,
         )
-        rel = target_hole_pose_robot @ torch.linalg.inv(leg_pose_robot)
-        return rel @ ee_pose
+        rel_robot = target_hole_pose_robot @ torch.linalg.inv(leg_pose_robot)
+        return rel_robot @ ee_pose_robot
 
     def _compute_skill_insert_target(
         self,
-        ee_pose,
+        ee_pose_robot,
         rb_states,
         part_idxs,
         sim_to_april_mat,
         april_to_robot,
         assemble_to,
     ):
-        device = ee_pose.device
-        base_pose = C.to_homogeneous(
+        device = ee_pose_robot.device
+        base_pose_env = C.to_homogeneous(
             rb_states[part_idxs[assemble_to]][0][:3],
             C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
         )
-        leg_pose = C.to_homogeneous(
+        leg_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        base_pose = sim_to_april_mat @ base_pose
-        leg_pose = sim_to_april_mat @ leg_pose
-        leg_pose_robot = april_to_robot @ leg_pose
+        base_pose_april = sim_to_april_mat @ base_pose_env
+        leg_pose_april = sim_to_april_mat @ leg_pose_env
+        leg_pose_robot = april_to_robot @ leg_pose_april
         leg_pose_robot = self._find_leg_pose_x_look_front_skill(leg_pose_robot, device)
+        base_pose_robot = april_to_robot @ base_pose_april
         base_hole_pose_robot = (
-            april_to_robot
-            @ base_pose
+            base_pose_robot
             @ torch.tensor(
                 get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
                 device=device,
             )
         )
-        target_ori = torch.tensor(
+        target_ori_robot = torch.tensor(
             get_mat([0, 0, 0], [np.pi / 2, 0, -np.pi / 4]), device=device
         )[:3, :3]
-        target_pos = base_hole_pose_robot[:3, 3]
-        target_hole_pose_robot = C.to_homogeneous(target_pos, target_ori)
-        rel = target_hole_pose_robot @ torch.linalg.inv(leg_pose_robot)
-        target = rel @ ee_pose
-        target[2, 3] += 0.03
-        return target
+        target_pos_robot = base_hole_pose_robot[:3, 3]
+        target_hole_pose_robot = C.to_homogeneous(target_pos_robot, target_ori_robot)
+        rel_robot = target_hole_pose_robot @ torch.linalg.inv(leg_pose_robot)
+        target_ee_pose_robot = rel_robot @ ee_pose_robot
+        target_ee_pose_robot[2, 3] += 0.03
+        return target_ee_pose_robot
 
     def _compute_skill_screw_target(
         self,
@@ -196,7 +196,7 @@ class RoundTableLeg(Leg):
         assemble_to,
         assembled=False,
     ):
-        ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
+        ee_pose_robot = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
         table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
         grasp_axis = right_finger_pos - left_finger_pos
         grasp_axis[2] = 0.0
@@ -205,7 +205,7 @@ class RoundTableLeg(Leg):
 
         if self.skill_state == "pick":
             self.skill_guidance_point = super()._compute_skill_pick_target(
-                ee_pose,
+                ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
@@ -251,7 +251,7 @@ class RoundTableLeg(Leg):
             if self.skill_pinched_steps >= 2:
                 self.skill_state = "place"
                 self.skill_target = self._compute_skill_place_target(
-                    ee_pose,
+                    ee_pose_robot,
                     rb_states,
                     part_idxs,
                     sim_to_april_mat,
@@ -260,15 +260,19 @@ class RoundTableLeg(Leg):
                 )
                 self.skill_guidance_point = self.skill_target[:3, 3].clone()
         elif self.skill_state == "place":
-            # skill_target was already computed at pick→place transition.
-            # Do NOT recompute: _find_leg_pose_x_look_front_skill may pick a
-            # different discrete orientation as the leg rotates, causing the
-            # 3D guidance point to jump (Δ ≈ 1-2 cm).
+            self.skill_target = self._compute_skill_place_target(
+                ee_pose_robot,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
-            xy_error = (ee_pose[:2, 3] - self.skill_target[:2, 3]).abs().sum()
-            z_error = (ee_pose[2, 3] - self.skill_target[2, 3]).abs()
+            xy_error = (ee_pose_robot[:2, 3] - self.skill_target[:2, 3]).abs().sum()
+            z_error = (ee_pose_robot[2, 3] - self.skill_target[2, 3]).abs()
             ori_error = self._ori_error_no_yaw(
-                ee_pose[:3, :3], self.skill_target[:3, :3]
+                ee_pose_robot[:3, :3], self.skill_target[:3, :3]
             )
             if (
                 xy_error < self.skill_place_xy_threshold
@@ -276,9 +280,8 @@ class RoundTableLeg(Leg):
                 and ori_error < self.skill_place_ori_threshold
             ):
                 self.skill_state = "insert"
-                # Compute insert target once at transition (not every frame).
                 self.skill_target = self._compute_skill_insert_target(
-                    ee_pose,
+                    ee_pose_robot,
                     rb_states,
                     part_idxs,
                     sim_to_april_mat,
