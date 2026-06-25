@@ -10,6 +10,8 @@ from furniture_bench.config import config
 
 
 class RoundTableLeg(Leg):
+    _gripper_width_key = "round_table"
+
     def __init__(self, part_config, part_idx):
         self.reset_x_len = 0.0425
         self.reset_y_len = 0.09125
@@ -178,6 +180,41 @@ class RoundTableLeg(Leg):
             return float(value.detach().cpu().item())
         return float(value)
 
+    def _is_seated(
+        self,
+        rb_states,
+        part_idxs,
+        assemble_to,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        """Return True when the leg is roughly at the place target (near the hole).
+
+        Uses the same part-relative error as the place->insert transition but
+        with 2x looser thresholds and ignore_axis=2 (matching the place phase
+        which uses ignore_axis=2 for round table).
+        """
+        if (
+            self.skill_target_part_pose_robot is None
+            or self.skill_target_anchor_pose_robot is None
+        ):
+            return True  # targets not established yet; don't claim dropped
+        leg_pose_robot = self._part_pose_robot(
+            self.name, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+        )
+        base_pose_robot = self._part_pose_robot(
+            assemble_to, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+        )
+        xy_error, z_error, ori_error = self._part_place_errors_robot(
+            leg_pose_robot, base_pose_robot, ignore_axis=2
+        )
+        seated = (
+            xy_error < self.skill_place_part_xz_threshold * 2.0
+            and z_error < self.skill_place_z_threshold * 2.0
+            and ori_error < self.skill_place_part_ori_threshold * 2.0
+        )
+        return bool(seated)
+
     def update_skill_state(
         self,
         ee_pos,
@@ -201,6 +238,29 @@ class RoundTableLeg(Leg):
         grasp_axis[2] = 0.0
         if torch.linalg.norm(grasp_axis) < 1e-6:
             grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
+
+        # Reverse edges place/insert/screw -> pick: if the leg was released
+        # during assembly (dropped) and is no longer seated at the hole,
+        # restart from pick.
+        if self.skill_state in ("place", "insert", "screw"):
+            held = self._is_held(
+                gripper_width,
+                part_force,
+                left_finger_pos,
+                right_finger_pos,
+                rb_states,
+                part_idxs,
+                table_normal,
+            )
+            if not held and not self._is_seated(
+                rb_states,
+                part_idxs,
+                assemble_to,
+                sim_to_april_mat,
+                april_to_robot,
+            ):
+                self.reset_skill_state()
+                return self.skill_state
 
         if self.skill_state == "pick":
             self.skill_guidance_point_robot = super()._compute_skill_pick_target(

@@ -10,6 +10,8 @@ import furniture_bench.controllers.control_utils as C
 
 
 class Leg(Part):
+    _gripper_width_key = "square_table"
+
     def __init__(self, part_config, part_idx):
         super().__init__(part_config, part_idx)
         tag_ids = part_config["ids"]
@@ -246,7 +248,7 @@ class Leg(Part):
             return True
         narrow_gripper = (
             gripper_width
-            < config["robot"]["max_gripper_width"]["square_table"] * 0.9
+            < config["robot"]["max_gripper_width"][self._gripper_width_key] * 0.9
         )
         pf = part_force.clone()
         pf = pf - torch.dot(pf, table_normal) * table_normal

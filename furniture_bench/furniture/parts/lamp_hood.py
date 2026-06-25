@@ -150,6 +150,70 @@ class LampHood(Part):
         self.skill_target_anchor_pose_robot = base_pose_robot.clone()
         return target_ee_pose_robot
 
+    def _is_held(
+        self,
+        gripper_width,
+        part_force,
+        left_finger_pos,
+        right_finger_pos,
+        rb_states,
+        part_idxs,
+        table_normal,
+    ):
+        """Return True when the gripper is still gripping the hood.
+
+        Mirrors the pick-phase pinched test (force + close_to_hood +
+        narrow_gripper) but with relaxed thresholds, so a transient grip
+        wobble does not read as "released".
+        """
+        if part_force is None:
+            return True
+        narrow_gripper = (
+            gripper_width
+            < config["robot"]["max_gripper_width"]["lamp"] * 0.9
+        )
+        pf = part_force.clone()
+        pf = pf - torch.dot(pf, table_normal) * table_normal
+        force_mag = torch.linalg.norm(pf)
+        left_dist = torch.linalg.norm(
+            left_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+        )
+        right_dist = torch.linalg.norm(
+            right_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+        )
+        close_to_hood = left_dist < 0.08 and right_dist < 0.08
+        held = force_mag > 1e-3 and close_to_hood and narrow_gripper
+        return bool(held)
+
+    def _is_seated(
+        self,
+        rb_states,
+        part_idxs,
+        assemble_to,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        """Return True when the hood is roughly at the place target.
+
+        Uses position-only error with 2x looser threshold, matching the hood's
+        place->done condition (no orientation check for hood placement).
+        """
+        if (
+            self.skill_target_part_pose_robot is None
+            or self.skill_target_anchor_pose_robot is None
+        ):
+            return True  # targets not established yet; don't claim dropped
+        hood_pose_robot = self._part_pose_robot(
+            self.name, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+        )
+        base_pose_robot = self._part_pose_robot(
+            assemble_to, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+        )
+        pos_error = self._position_only_place_error_robot(
+            hood_pose_robot, base_pose_robot
+        )
+        return bool(pos_error < self.skill_place_pos_threshold * 2.0)
+
     def update_skill_state(
         self,
         ee_pos,
@@ -169,6 +233,28 @@ class LampHood(Part):
     ):
         ee_pose_robot = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
         table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
+
+        # Reverse edge place -> pick: if the hood was released during placement
+        # and is no longer seated on the base, restart from pick.
+        if self.skill_state == "place":
+            held = self._is_held(
+                gripper_width,
+                part_force,
+                left_finger_pos,
+                right_finger_pos,
+                rb_states,
+                part_idxs,
+                table_normal,
+            )
+            if not held and not self._is_seated(
+                rb_states,
+                part_idxs,
+                assemble_to,
+                sim_to_april_mat,
+                april_to_robot,
+            ):
+                self.reset_skill_state()
+                return self.skill_state
 
         if self.skill_state == "pick":
             self.skill_guidance_point_robot = self._compute_skill_pick_target(

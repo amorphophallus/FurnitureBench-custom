@@ -10,6 +10,8 @@ import furniture_bench.utils.transform as T
 
 
 class LampBulb(Leg):
+    _gripper_width_key = "lamp"
+
     def __init__(self, part_config, part_idx):
         self.half_width = 0.0175
         self.tag_offset = 0.0175
@@ -159,6 +161,29 @@ class LampBulb(Leg):
         grasp_axis[2] = 0.0
         if torch.linalg.norm(grasp_axis) < 1e-6:
             grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
+
+        # Reverse edges place/insert/screw -> pick: if the bulb was released
+        # during assembly (dropped) and is no longer seated at the base,
+        # restart from pick.
+        if self.skill_state in ("place", "insert", "screw"):
+            held = self._is_held(
+                gripper_width,
+                part_force,
+                left_finger_pos,
+                right_finger_pos,
+                rb_states,
+                part_idxs,
+                table_normal,
+            )
+            if not held and not self._is_seated(
+                rb_states,
+                part_idxs,
+                assemble_to,
+                sim_to_april_mat,
+                april_to_robot,
+            ):
+                self.reset_skill_state()
+                return self.skill_state
 
         if self.skill_state == "pick":
             self.skill_guidance_point_robot = super()._compute_skill_pick_target(

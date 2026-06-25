@@ -284,6 +284,77 @@ class RoundTableBase(Part):
         base_pose_april = sim_to_april_mat @ base_pose_env
         return (april_to_robot @ base_pose_april)[:3, 3].clone()
 
+    def _is_held(
+        self,
+        gripper_width,
+        part_force,
+        left_finger_pos,
+        right_finger_pos,
+        rb_states,
+        part_idxs,
+        table_normal,
+    ):
+        """Return True when the gripper is still gripping the base.
+
+        Mirrors the pick-phase pinched test (force + close_to_part +
+        narrow_gripper) but with relaxed thresholds, so a transient grip
+        wobble does not read as "released".
+        """
+        if part_force is None:
+            return True
+        narrow_gripper = (
+            gripper_width
+            < config["robot"]["max_gripper_width"]["round_table"] * 0.9
+        )
+        pf = part_force.clone()
+        pf = pf - torch.dot(pf, table_normal) * table_normal
+        force_mag = torch.linalg.norm(pf)
+        left_dist = torch.linalg.norm(
+            left_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+        )
+        right_dist = torch.linalg.norm(
+            right_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+        )
+        close_to_part = left_dist < 0.08 and right_dist < 0.08
+        held = force_mag > 1e-3 and close_to_part and narrow_gripper
+        return bool(held)
+
+    def _is_seated(
+        self,
+        rb_states,
+        part_idxs,
+        assemble_to,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        """Return True when the base is roughly at the place target.
+
+        Uses the same part-relative error as the place->insert transition but
+        with 2x looser thresholds.  Note the argument order matches the place
+        phase: base_pose_robot (self) is the operated part, leg_pose_robot
+        (assemble_to) is the anchor.
+        """
+        if (
+            self.skill_target_part_pose_robot is None
+            or self.skill_target_anchor_pose_robot is None
+        ):
+            return True  # targets not established yet; don't claim dropped
+        base_pose_robot = self._part_pose_robot(
+            self.name, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+        )
+        leg_pose_robot = self._part_pose_robot(
+            assemble_to, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+        )
+        xy_error, z_error, ori_error = self._part_place_errors_robot(
+            base_pose_robot, leg_pose_robot, ignore_axis=1
+        )
+        seated = (
+            xy_error < self.skill_place_part_xz_threshold * 2.0
+            and z_error < self.skill_place_z_threshold * 2.0
+            and ori_error < self.skill_place_part_ori_threshold * 2.0
+        )
+        return bool(seated)
+
     def update_skill_state(
         self,
         ee_pos,
@@ -307,6 +378,29 @@ class RoundTableBase(Part):
         grasp_axis[2] = 0.0
         if torch.linalg.norm(grasp_axis) < 1e-6:
             grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
+
+        # Reverse edges place/insert/screw -> pick: if the base was released
+        # during assembly (dropped) and is no longer seated on the leg,
+        # restart from pick.
+        if self.skill_state in ("place", "insert", "screw"):
+            held = self._is_held(
+                gripper_width,
+                part_force,
+                left_finger_pos,
+                right_finger_pos,
+                rb_states,
+                part_idxs,
+                table_normal,
+            )
+            if not held and not self._is_seated(
+                rb_states,
+                part_idxs,
+                assemble_to,
+                sim_to_april_mat,
+                april_to_robot,
+            ):
+                self.reset_skill_state()
+                return self.skill_state
 
         if self.skill_state == "pick":
             self.skill_guidance_point_robot = self._compute_skill_pick_guidance_point(
