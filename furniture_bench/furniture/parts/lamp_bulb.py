@@ -56,29 +56,28 @@ class LampBulb(Leg):
 
     def _compute_skill_place_target(
         self,
-        ee_pose,
+        ee_pose_robot,
         rb_states,
         part_idxs,
         sim_to_april_mat,
         april_to_robot,
         assemble_to,
     ):
-        device = ee_pose.device
-        base_pose = C.to_homogeneous(
+        device = ee_pose_robot.device
+        base_pose_env = C.to_homogeneous(
             rb_states[part_idxs[assemble_to]][0][:3],
             C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
         )
-        bulb_pose = C.to_homogeneous(
+        bulb_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        base_pose = sim_to_april_mat @ base_pose
-        bulb_pose = sim_to_april_mat @ bulb_pose
-        bulb_pose_robot = april_to_robot @ bulb_pose
-        bulb_pose_robot = self._find_bulb_pose_x_look_front_skill(bulb_pose_robot, device)
+        base_pose_april = sim_to_april_mat @ base_pose_env
+        bulb_pose_april = sim_to_april_mat @ bulb_pose_env
+        base_pose_robot = april_to_robot @ base_pose_april
+        bulb_pose_robot = april_to_robot @ bulb_pose_april
         base_hole_pose_robot = (
-            april_to_robot
-            @ base_pose
+            base_pose_robot
             @ torch.tensor(
                 get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
                 device=device,
@@ -88,53 +87,54 @@ class LampBulb(Leg):
             [
                 [1.0, 0.0, 0.0, base_hole_pose_robot[0, 3]],
                 [0.0, 0.0, -1.0, base_hole_pose_robot[1, 3]],
-                [0.0, 1.0, 0.0, base_pose[2, 3] + 0.09],
+                [0.0, 1.0, 0.0, base_pose_robot[2, 3] + 0.09],
                 [0.0, 0.0, 0.0, 1.0],
             ],
             device=device,
         )
-        rel = target_hole_pose_robot @ torch.linalg.inv(bulb_pose_robot)
-        return rel @ ee_pose
+        rel_robot = target_hole_pose_robot @ torch.linalg.inv(bulb_pose_robot)
+        target_ee_pose_robot = rel_robot @ ee_pose_robot
+        self.skill_target_part_pose_robot = target_hole_pose_robot.clone()
+        self.skill_target_anchor_pose_robot = base_pose_robot.clone()
+        return target_ee_pose_robot
 
     def _compute_skill_insert_target(
         self,
-        ee_pose,
+        ee_pose_robot,
         rb_states,
         part_idxs,
         sim_to_april_mat,
         april_to_robot,
         assemble_to,
     ):
-        device = ee_pose.device
-        base_pose = C.to_homogeneous(
-            rb_states[part_idxs[assemble_to]][0][:3],
-            C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
+        return self._compute_skill_place_target(
+            ee_pose_robot,
+            rb_states,
+            part_idxs,
+            sim_to_april_mat,
+            april_to_robot,
+            assemble_to,
         )
-        bulb_pose = C.to_homogeneous(
+
+    def _compute_skill_screw_target(
+        self,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        assemble_to,
+    ):
+        bulb_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        base_pose = sim_to_april_mat @ base_pose
-        bulb_pose = sim_to_april_mat @ bulb_pose
-        bulb_pose_robot = april_to_robot @ bulb_pose
-        bulb_pose_robot = self._find_bulb_pose_x_look_front_skill(bulb_pose_robot, device)
-        base_hole_pose_robot = (
-            april_to_robot
-            @ base_pose
-            @ torch.tensor(
-                get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
-                device=device,
-            )
-        )
-        target_ori = torch.tensor(
-            get_mat([0, 0, 0], [np.pi / 2, 0, np.pi / 4]), device=device
-        )[:3, :3]
-        target_pos = base_hole_pose_robot[:3, 3]
-        target_hole_pose_robot = C.to_homogeneous(target_pos, target_ori)
-        rel = target_hole_pose_robot @ torch.linalg.inv(bulb_pose_robot)
-        target = rel @ ee_pose
-        target[2, 3] += 0.03
-        return target
+        bulb_pose_april = sim_to_april_mat @ bulb_pose_env
+        bulb_pose_robot = april_to_robot @ bulb_pose_april
+        long_axis_idx = 1 if self.reset_y_len >= self.reset_x_len else 0
+        long_axis_len = self.reset_y_len if long_axis_idx == 1 else self.reset_x_len
+        long_axis_robot = bulb_pose_robot[:3, long_axis_idx]
+        long_axis_offset_robot = long_axis_robot * (long_axis_len * 0.25)
+        return (bulb_pose_robot[:3, 3] + long_axis_offset_robot).clone()
 
     def update_skill_state(
         self,
@@ -153,7 +153,7 @@ class LampBulb(Leg):
         assemble_to,
         assembled=False,
     ):
-        ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
+        ee_pose_robot = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
         table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
         grasp_axis = right_finger_pos - left_finger_pos
         grasp_axis[2] = 0.0
@@ -161,8 +161,8 @@ class LampBulb(Leg):
             grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
 
         if self.skill_state == "pick":
-            self.skill_guidance_point = super()._compute_skill_pick_target(
-                ee_pose,
+            self.skill_guidance_point_robot = super()._compute_skill_pick_target(
+                ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
@@ -202,52 +202,69 @@ class LampBulb(Leg):
             self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
             if self.skill_pinched_steps >= 2:
                 self.skill_state = "place"
-                self.skill_target = self._compute_skill_place_target(
-                    ee_pose,
+                self.skill_target_ee_pose_robot = self._compute_skill_place_target(
+                    ee_pose_robot,
                     rb_states,
                     part_idxs,
                     sim_to_april_mat,
                     april_to_robot,
                     assemble_to,
                 )
-                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+                self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
         elif self.skill_state == "place":
-            self.skill_target = self._compute_skill_place_target(
-                ee_pose,
+            self.skill_target_ee_pose_robot = self._compute_skill_place_target(
+                ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
                 april_to_robot,
                 assemble_to,
             )
-            self.skill_guidance_point = self.skill_target[:3, 3].clone()
-            xy_error = (ee_pose[:2, 3] - self.skill_target[:2, 3]).abs().sum()
-            z_error = (ee_pose[2, 3] - self.skill_target[2, 3]).abs()
-            ori_error = self._ori_error_no_yaw(
-                ee_pose[:3, :3], self.skill_target[:3, :3]
+            self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            base_pose_robot = self._part_pose_robot(
+                assemble_to, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+            )
+            bulb_pose_robot = self._part_pose_robot(
+                self.name, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+            )
+            xy_error, z_error, ori_error = self._part_place_errors_robot(
+                bulb_pose_robot,
+                base_pose_robot,
+                ignore_axis=1,
             )
             if (
-                xy_error < self.skill_place_xy_threshold
+                xy_error < self.skill_place_part_xz_threshold
                 and z_error < self.skill_place_z_threshold
-                and ori_error < self.skill_place_ori_threshold
+                and ori_error < self.skill_place_part_ori_threshold
             ):
                 self.skill_state = "insert"
         elif self.skill_state == "insert":
-            self.skill_target = self._compute_skill_insert_target(
-                ee_pose,
+            self.skill_target_ee_pose_robot = self._compute_skill_insert_target(
+                ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
                 april_to_robot,
                 assemble_to,
             )
-            self.skill_guidance_point = self.skill_target[:3, 3].clone()
+            self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
             if gripper_width >= config["robot"]["max_gripper_width"]["lamp"] - 0.001:
                 self.skill_state = "screw"
-                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+                self.skill_guidance_point_robot = self._compute_skill_screw_target(
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                    assemble_to,
+                )
         elif self.skill_state == "screw":
-            if self.skill_target is not None:
-                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+            self.skill_guidance_point_robot = self._compute_skill_screw_target(
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
             if assembled:
                 self.skill_state = "done"
 

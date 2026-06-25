@@ -62,9 +62,12 @@ class LampHood(Part):
 
     def reset_skill_state(self):
         self.skill_state = "pick"
-        self.skill_target = None
-        self.skill_guidance_point = None
+        self.skill_target_ee_pose_robot = None
+        self.skill_target_part_pose_robot = None
+        self.skill_target_anchor_pose_robot = None
+        self.skill_guidance_point_robot = None
         self.skill_pinched_steps = 0
+        self.skill_place_pos_threshold = 0.04
 
     def get_skill_label(self):
         if self.skill_state == "done":
@@ -72,60 +75,80 @@ class LampHood(Part):
         return self.skill_state
 
     def get_guidance_point(self):
-        return self.skill_guidance_point
+        return self.skill_guidance_point_robot
+
+    def _part_pose_env(self, part_name, rb_states, part_idxs):
+        return C.to_homogeneous(
+            rb_states[part_idxs[part_name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[part_name]][0][3:7]),
+        )
+
+    def _part_pose_robot(self, part_name, rb_states, part_idxs, sim_to_april_mat, april_to_robot):
+        part_pose_env = self._part_pose_env(part_name, rb_states, part_idxs)
+        part_pose_april = sim_to_april_mat @ part_pose_env
+        return april_to_robot @ part_pose_april
+
+    def _position_only_place_error_robot(self, part_pose_robot, anchor_pose_robot):
+        current_rel_part_pose_robot = torch.linalg.inv(anchor_pose_robot) @ part_pose_robot
+        target_rel_part_pose_robot = (
+            torch.linalg.inv(self.skill_target_anchor_pose_robot)
+            @ self.skill_target_part_pose_robot
+        )
+        return (
+            current_rel_part_pose_robot[:3, 3] - target_rel_part_pose_robot[:3, 3]
+        ).abs().sum()
 
     def _compute_skill_pick_target(
         self,
-        ee_pose,
+        ee_pose_robot,
         rb_states,
         part_idxs,
         sim_to_april_mat,
         april_to_robot,
     ):
-        hood_pose = C.to_homogeneous(
+        hood_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        hood_pose = sim_to_april_mat @ hood_pose
-        target_pos = (april_to_robot @ hood_pose[:4, 3])[:3]
-        target_pos[1] += self.pick_offset_y
-        target_pos[2] = (april_to_robot @ hood_pose)[2, 3]
-        return target_pos
+        hood_pose_april = sim_to_april_mat @ hood_pose_env
+        target_pos_robot = (april_to_robot @ hood_pose_april[:4, 3])[:3]
+        target_pos_robot[1] += self.pick_offset_y
+        target_pos_robot[2] = (april_to_robot @ hood_pose_april)[2, 3]
+        return target_pos_robot
 
     def _compute_skill_place_target(
         self,
-        ee_pose,
+        ee_pose_robot,
         rb_states,
         part_idxs,
         sim_to_april_mat,
         april_to_robot,
         assemble_to,
     ):
-        device = ee_pose.device
-        base_pose = C.to_homogeneous(
+        device = ee_pose_robot.device
+        base_pose_env = C.to_homogeneous(
             rb_states[part_idxs[assemble_to]][0][:3],
             C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
         )
-        hood_pose = C.to_homogeneous(
+        hood_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
             C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
         )
-        base_pose = sim_to_april_mat @ base_pose
-        hood_pose = sim_to_april_mat @ hood_pose
-        hood_pose_robot = april_to_robot @ hood_pose
+        base_pose_april = sim_to_april_mat @ base_pose_env
+        hood_pose_april = sim_to_april_mat @ hood_pose_env
+        base_pose_robot = april_to_robot @ base_pose_april
+        hood_pose_robot = april_to_robot @ hood_pose_april
         base_target_pose_robot = (
-            april_to_robot
-            @ base_pose
-            @ torch.tensor(
-                get_mat(self.default_assembled_pose[:3, 3], [0.0, 0.0, 0.0]),
-                device=device,
-            )
+            base_pose_robot
+            @ torch.tensor(self.default_assembled_pose, device=device).float()
         )
-        target_hood_pose_robot = hood_pose_robot.clone()
-        target_hood_pose_robot[:3, 3] = base_target_pose_robot[:3, 3]
+        target_hood_pose_robot = base_target_pose_robot.clone()
         target_hood_pose_robot[2, 3] += self.place_height_offset
-        rel = target_hood_pose_robot @ torch.linalg.inv(hood_pose_robot)
-        return rel @ ee_pose
+        rel_robot = target_hood_pose_robot @ torch.linalg.inv(hood_pose_robot)
+        target_ee_pose_robot = rel_robot @ ee_pose_robot
+        self.skill_target_part_pose_robot = target_hood_pose_robot.clone()
+        self.skill_target_anchor_pose_robot = base_pose_robot.clone()
+        return target_ee_pose_robot
 
     def update_skill_state(
         self,
@@ -144,12 +167,12 @@ class LampHood(Part):
         assemble_to,
         assembled=False,
     ):
-        ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
+        ee_pose_robot = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
         table_normal = torch.tensor([0.0, 0.0, 1.0], device=ee_pos.device)
 
         if self.skill_state == "pick":
-            self.skill_guidance_point = self._compute_skill_pick_target(
-                ee_pose,
+            self.skill_guidance_point_robot = self._compute_skill_pick_target(
+                ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
@@ -171,26 +194,35 @@ class LampHood(Part):
             self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
             if self.skill_pinched_steps >= 2:
                 self.skill_state = "place"
-                self.skill_target = self._compute_skill_place_target(
-                    ee_pose,
+                self.skill_target_ee_pose_robot = self._compute_skill_place_target(
+                    ee_pose_robot,
                     rb_states,
                     part_idxs,
                     sim_to_april_mat,
                     april_to_robot,
                     assemble_to,
                 )
-                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+                self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
         elif self.skill_state == "place":
-            self.skill_target = self._compute_skill_place_target(
-                ee_pose,
+            self.skill_target_ee_pose_robot = self._compute_skill_place_target(
+                ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
                 april_to_robot,
                 assemble_to,
             )
-            self.skill_guidance_point = self.skill_target[:3, 3].clone()
-            if assembled:
+            self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            base_pose_robot = self._part_pose_robot(
+                assemble_to, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+            )
+            hood_pose_robot = self._part_pose_robot(
+                self.name, rb_states, part_idxs, sim_to_april_mat, april_to_robot
+            )
+            pos_error = self._position_only_place_error_robot(
+                hood_pose_robot, base_pose_robot
+            )
+            if assembled or pos_error < self.skill_place_pos_threshold:
                 self.skill_state = "done"
 
         return self.skill_state

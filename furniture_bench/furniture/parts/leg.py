@@ -48,16 +48,16 @@ class Leg(Part):
 
     def reset_skill_state(self):
         self.skill_state = "pick"
-        self.skill_target = None
-        self.skill_target_leg_pose = None
-        self.skill_target_table_pose = None
-        self.skill_guidance_point = None
+        self.skill_target_ee_pose_robot = None
+        self.skill_target_part_pose_robot = None
+        self.skill_target_anchor_pose_robot = None
+        self.skill_guidance_point_robot = None
         self.skill_pinched_steps = 0
         self.skill_place_xy_threshold = 0.008
         self.skill_place_z_threshold = 0.04
         self.skill_place_ori_threshold = 0.5
-        self.skill_place_leg_xz_threshold = 0.007
-        self.skill_place_leg_ori_threshold = 0.15
+        self.skill_place_part_xz_threshold = 0.007
+        self.skill_place_part_ori_threshold = 0.15
 
     def get_skill_label(self):
         if self.skill_state == "done":
@@ -65,7 +65,7 @@ class Leg(Part):
         return self.skill_state
 
     def get_guidance_point(self):
-        return self.skill_guidance_point
+        return self.skill_guidance_point_robot
 
     def _ori_error_no_yaw(self, current_rot, target_rot):
         def remove_yaw(rot):
@@ -104,6 +104,43 @@ class Leg(Part):
         axis_angle_ignore = axis_angle.clone()
         axis_angle_ignore[ignore_axis] = 0.0
         return torch.linalg.norm(axis_angle_ignore)
+
+    def _part_pose_env(self, part_name, rb_states, part_idxs):
+        return C.to_homogeneous(
+            rb_states[part_idxs[part_name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[part_name]][0][3:7]),
+        )
+
+    def _part_pose_robot(self, part_name, rb_states, part_idxs, sim_to_april_mat, april_to_robot):
+        part_pose_env = self._part_pose_env(part_name, rb_states, part_idxs)
+        part_pose_april = sim_to_april_mat @ part_pose_env
+        return april_to_robot @ part_pose_april
+
+    def _part_place_errors_robot(
+        self,
+        part_pose_robot,
+        anchor_pose_robot,
+        *,
+        ignore_axis,
+        planar_axes=(0, 2),
+        vertical_axis=1,
+    ):
+        current_rel_part_pose_robot = torch.linalg.inv(anchor_pose_robot) @ part_pose_robot
+        target_rel_part_pose_robot = (
+            torch.linalg.inv(self.skill_target_anchor_pose_robot)
+            @ self.skill_target_part_pose_robot
+        )
+        part_pos_diff_robot = (
+            current_rel_part_pose_robot[:3, 3] - target_rel_part_pose_robot[:3, 3]
+        )
+        planar_error = part_pos_diff_robot[list(planar_axes)].abs().sum()
+        vertical_error = part_pos_diff_robot[vertical_axis].abs()
+        ori_error = self._rot_error_ignore_axis(
+            current_rel_part_pose_robot[:3, :3],
+            target_rel_part_pose_robot[:3, :3],
+            ignore_axis=ignore_axis,
+        )
+        return planar_error, vertical_error, ori_error
 
     def _compute_skill_pick_target(
         self,
@@ -184,8 +221,8 @@ class Leg(Part):
         )
         rel_robot = target_leg_pose_robot @ torch.linalg.inv(leg_pose_robot)
         target_ee_pose_robot = rel_robot @ ee_pose_robot
-        self.skill_target_leg_pose = target_leg_pose_robot.clone()
-        self.skill_target_table_pose = table_pose_robot.clone()
+        self.skill_target_part_pose_robot = target_leg_pose_robot.clone()
+        self.skill_target_anchor_pose_robot = table_pose_robot.clone()
         return target_ee_pose_robot
 
     def update_skill_state(
@@ -213,7 +250,7 @@ class Leg(Part):
             grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=ee_pos.device)
 
         if self.skill_state == "pick":
-            self.skill_guidance_point = self._compute_skill_pick_target(
+            self.skill_guidance_point_robot = self._compute_skill_pick_target(
                 ee_pose_robot,
                 rb_states,
                 part_idxs,
@@ -255,7 +292,7 @@ class Leg(Part):
             self.skill_pinched_steps = self.skill_pinched_steps + 1 if pinched else 0
             if self.skill_pinched_steps >= 2:
                 self.skill_state = "place"
-                self.skill_target = self._compute_skill_place_target(
+                self.skill_target_ee_pose_robot = self._compute_skill_place_target(
                     ee_pose_robot,
                     rb_states,
                     part_idxs,
@@ -263,11 +300,17 @@ class Leg(Part):
                     april_to_robot,
                     assemble_to,
                 )
-                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+                self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
         elif self.skill_state == "place":
-            # skill_target was already computed at pick→place transition.
-            # Do NOT recompute: the 3D guidance point is a frozen EE target.
-            self.skill_guidance_point = self.skill_target[:3, 3].clone()
+            self.skill_target_ee_pose_robot = self._compute_skill_place_target(
+                ee_pose_robot,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
+            self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
             table_pose_env = C.to_homogeneous(
                 rb_states[part_idxs[assemble_to]][0][:3],
                 C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
@@ -278,37 +321,37 @@ class Leg(Part):
             )
             table_pose_robot = april_to_robot @ sim_to_april_mat @ table_pose_env
             leg_pose_robot = april_to_robot @ sim_to_april_mat @ leg_pose_env
-            current_rel_leg_pose = torch.linalg.inv(table_pose_robot) @ leg_pose_robot
-            target_rel_leg_pose = (
-                torch.linalg.inv(self.skill_target_table_pose) @ self.skill_target_leg_pose
-            )
-            leg_pos_diff = current_rel_leg_pose[:3, 3] - target_rel_leg_pose[:3, 3]
-            xy_error = leg_pos_diff[[0, 2]].abs().sum()
-            z_error = leg_pos_diff[1].abs()
-            ori_error = self._rot_error_ignore_axis(
-                current_rel_leg_pose[:3, :3],
-                target_rel_leg_pose[:3, :3],
+            xy_error, z_error, ori_error = self._part_place_errors_robot(
+                leg_pose_robot,
+                table_pose_robot,
                 ignore_axis=1,
             )
             if (
-                xy_error < self.skill_place_leg_xz_threshold
+                xy_error < self.skill_place_part_xz_threshold
                 and z_error < self.skill_place_z_threshold
-                and ori_error < self.skill_place_leg_ori_threshold
+                and ori_error < self.skill_place_part_ori_threshold
             ):
                 self.skill_state = "insert"
         elif self.skill_state == "insert":
-            if self.skill_target is not None:
-                self.skill_guidance_point = self.skill_target[:3, 3].clone()
+            self.skill_target_ee_pose_robot = self._compute_skill_place_target(
+                ee_pose_robot,
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
+            self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
             if gripper_width >= config["robot"]["max_gripper_width"]["square_table"] - 0.001:
                 self.skill_state = "screw"
-                self.skill_guidance_point = self._compute_skill_screw_target(
+                self.skill_guidance_point_robot = self._compute_skill_screw_target(
                     rb_states,
                     part_idxs,
                     sim_to_april_mat,
                     april_to_robot,
                 )
         elif self.skill_state == "screw":
-            self.skill_guidance_point = self._compute_skill_screw_target(
+            self.skill_guidance_point_robot = self._compute_skill_screw_target(
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,

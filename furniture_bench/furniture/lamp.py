@@ -24,6 +24,11 @@ class Lamp(Furniture):
         self.num_parts = len(self.parts)
 
         self.should_be_assembled = [(0, 1), (0, 2)]
+        # Lamp bulb can settle near the socket after insert without a useful
+        # screw action. Keep the socket-axis assembled threshold slightly tighter.
+        self.assembled_pos_threshold = [0.005, 0.0045, 0.005]
+        self.ignore_z_rot.add((0, 1))
+        self.ignore_z_rot_axis[(0, 1)] = 1
         self.position_only.add((0, 2))
 
         self.should_assembled_first[(0, 2)] = (0, 1)

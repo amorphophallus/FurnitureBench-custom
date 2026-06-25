@@ -58,8 +58,8 @@ class LampBase(Part):
 
     def reset_skill_state(self):
         self.skill_state = "push"
-        self.skill_target = None
-        self.skill_guidance_point = None
+        self.skill_target_ee_pose_robot = None
+        self.skill_guidance_point_robot = None
 
     def get_skill_label(self):
         if self.skill_state == "done":
@@ -67,7 +67,7 @@ class LampBase(Part):
         return self.skill_state
 
     def get_guidance_point(self):
-        return self.skill_guidance_point
+        return self.skill_guidance_point_robot
 
     def _compute_skill_push_target(
         self,
@@ -136,14 +136,14 @@ class LampBase(Part):
     ):
         ee_pose = C.to_homogeneous(ee_pos, C.quat2mat(ee_quat))
         if self.skill_state == "push":
-            self.skill_target = self._compute_skill_push_target(
+            self.skill_target_ee_pose_robot = self._compute_skill_push_target(
                 ee_pose,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
                 april_to_robot,
             )
-            self.skill_guidance_point = self._compute_skill_push_guidance_point(
+            self.skill_guidance_point_robot = self._compute_skill_push_guidance_point(
                 ee_pose,
                 rb_states,
                 part_idxs,
@@ -156,7 +156,7 @@ class LampBase(Part):
             )
             base_pose = sim_to_april_mat @ base_pose
             base_pos_robot = (april_to_robot @ base_pose)[:3, 3]
-            pos_error = (base_pos_robot - self.skill_guidance_point).abs().sum()
+            pos_error = (base_pos_robot - self.skill_guidance_point_robot).abs().sum()
             if pos_error < 0.05:
                 self.skill_state = "done"
 
