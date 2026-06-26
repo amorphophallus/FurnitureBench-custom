@@ -337,13 +337,21 @@ class Leg(Part):
                 part_idxs,
                 table_normal,
             )
-            if not held and not self._is_seated(
+            seated = self._is_seated(
                 rb_states,
                 part_idxs,
                 assemble_to,
                 sim_to_april_mat,
                 april_to_robot,
-            ):
+            )
+            print(
+                "[leg reverse_debug] "
+                f"skill={self.skill_state} "
+                f"held={held} seated={seated} "
+                f"-> {'RESET_TO_PICK' if (not held and not seated) else 'keep'}",
+                flush=True,
+            )
+            if not held and not seated:
                 self.reset_skill_state()
                 return self.skill_state
 

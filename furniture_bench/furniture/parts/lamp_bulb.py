@@ -35,6 +35,8 @@ class LampBulb(Leg):
         self.skill_place_xy_threshold = 0.008
         self.skill_place_z_threshold = 0.05
         self.skill_place_ori_threshold = 0.5
+        self.skill_reverse_reset_steps = 0
+        self.skill_reverse_reset_threshold = 4
 
     def _find_down_z(self, mat):
         max_mat = mat.clone()
@@ -118,6 +120,41 @@ class LampBulb(Leg):
             assemble_to,
         )
 
+    def _is_held(
+        self,
+        gripper_width,
+        part_force,
+        left_finger_pos,
+        right_finger_pos,
+        rb_states,
+        part_idxs,
+        table_normal,
+    ):
+        """Lamp bulb tolerates a noticeably skewed grasp during placement.
+
+        Reuse the leg-style held check, but keep the finger-distance threshold
+        as loose as the bulb pick detector so a slightly crooked bulb does not
+        bounce place -> pick on single-frame contact jitter.
+        """
+        if part_force is None:
+            return True
+        narrow_gripper = (
+            gripper_width
+            < config["robot"]["max_gripper_width"]["lamp"] * 0.9
+        )
+        pf = part_force.clone()
+        pf = pf - torch.dot(pf, table_normal) * table_normal
+        force_mag = torch.linalg.norm(pf)
+        left_dist = torch.linalg.norm(
+            left_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+        )
+        right_dist = torch.linalg.norm(
+            right_finger_pos - rb_states[part_idxs[self.name]][0][:3]
+        )
+        close_to_bulb = left_dist < 0.12 and right_dist < 0.12
+        held = force_mag > 1e-3 and close_to_bulb and narrow_gripper
+        return bool(held)
+
     def _compute_skill_screw_target(
         self,
         rb_states,
@@ -175,13 +212,19 @@ class LampBulb(Leg):
                 part_idxs,
                 table_normal,
             )
-            if not held and not self._is_seated(
+            seated = self._is_seated(
                 rb_states,
                 part_idxs,
                 assemble_to,
                 sim_to_april_mat,
                 april_to_robot,
-            ):
+            )
+            if not held and not seated:
+                self.skill_reverse_reset_steps += 1
+            else:
+                self.skill_reverse_reset_steps = 0
+
+            if self.skill_reverse_reset_steps >= self.skill_reverse_reset_threshold:
                 self.reset_skill_state()
                 return self.skill_state
 

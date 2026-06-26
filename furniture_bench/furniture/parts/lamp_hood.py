@@ -68,6 +68,8 @@ class LampHood(Part):
         self.skill_guidance_point_robot = None
         self.skill_pinched_steps = 0
         self.skill_place_pos_threshold = 0.04
+        self.skill_reverse_reset_steps = 0
+        self.skill_reverse_reset_threshold = 4
 
     def get_skill_label(self):
         if self.skill_state == "done":
@@ -181,7 +183,7 @@ class LampHood(Part):
         right_dist = torch.linalg.norm(
             right_finger_pos - rb_states[part_idxs[self.name]][0][:3]
         )
-        close_to_hood = left_dist < 0.08 and right_dist < 0.08
+        close_to_hood = left_dist < 0.1 and right_dist < 0.1
         held = force_mag > 1e-3 and close_to_hood and narrow_gripper
         return bool(held)
 
@@ -246,13 +248,19 @@ class LampHood(Part):
                 part_idxs,
                 table_normal,
             )
-            if not held and not self._is_seated(
+            seated = self._is_seated(
                 rb_states,
                 part_idxs,
                 assemble_to,
                 sim_to_april_mat,
                 april_to_robot,
-            ):
+            )
+            if not held and not seated:
+                self.skill_reverse_reset_steps += 1
+            else:
+                self.skill_reverse_reset_steps = 0
+
+            if self.skill_reverse_reset_steps >= self.skill_reverse_reset_threshold:
                 self.reset_skill_state()
                 return self.skill_state
 
