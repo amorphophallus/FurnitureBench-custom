@@ -53,6 +53,8 @@ class Leg(Part):
         self.skill_target_ee_pose_robot = None
         self.skill_target_part_pose_robot = None
         self.skill_target_anchor_pose_robot = None
+        self.skill_guidance_pose_robot = None
+        self.skill_target_gripper_width = None
         self.skill_guidance_point_robot = None
         self.skill_pinched_steps = 0
         self.skill_place_xy_threshold = 0.008
@@ -68,6 +70,19 @@ class Leg(Part):
 
     def get_guidance_point(self):
         return self.skill_guidance_point_robot
+
+    def _guidance_pose_from_point(self, point_robot, orientation_robot):
+        return C.to_homogeneous(point_robot, orientation_robot)
+
+    def _compute_skill_place_guidance_orientation(self, device):
+        return torch.tensor(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                [0.0, 1.0, 0.0],
+            ],
+            device=device,
+        ).float()
 
     def _ori_error_no_yaw(self, current_rot, target_rot):
         def remove_yaw(rot):
@@ -165,12 +180,36 @@ class Leg(Part):
         target_pos_robot[2] = (april_to_robot @ leg_pose_april)[2, 3]
         return target_pos_robot
 
+    def _compute_skill_pick_pose_target(
+        self,
+        ee_pose_robot,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        device = ee_pose_robot.device
+        target_pos_robot = self._compute_skill_pick_target(
+            ee_pose_robot,
+            rb_states,
+            part_idxs,
+            sim_to_april_mat,
+            april_to_robot,
+        )
+        margin = torch.tensor(rot_mat([0, -np.pi / 5, 0], hom=True), device=device).float()
+        grasp_rot = torch.tensor(
+            rot_mat([np.pi / 2, -np.pi / 2, 0], hom=True), device=device
+        ).float()
+        target_ori_robot = (margin @ april_to_robot @ grasp_rot)[:3, :3]
+        return self._guidance_pose_from_point(target_pos_robot, target_ori_robot)
+
     def _compute_skill_screw_target(
         self,
         rb_states,
         part_idxs,
         sim_to_april_mat,
         april_to_robot,
+        assemble_to=None,
     ):
         leg_pose_env = C.to_homogeneous(
             rb_states[part_idxs[self.name]][0][:3],
@@ -181,6 +220,27 @@ class Leg(Part):
         # Offset 1/4 leg length along local Y (long axis)
         y_offset_robot = leg_pose_robot[:3, 1] * (self.reset_y_len * 0.25)
         return (leg_pose_robot[:3, 3] + y_offset_robot).clone()
+
+    def _compute_skill_screw_pose_target(
+        self,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+        assemble_to=None,
+    ):
+        device = rb_states.device
+        target_pos_robot = self._compute_skill_screw_target(
+            rb_states,
+            part_idxs,
+            sim_to_april_mat,
+            april_to_robot,
+            assemble_to,
+        )
+        target_ori_robot = torch.tensor(
+            rot_mat([np.pi, 0, 0], hom=True), device=device
+        ).float()[:3, :3]
+        return self._guidance_pose_from_point(target_pos_robot, target_ori_robot)
 
     def _compute_skill_place_target(
         self,
@@ -356,13 +416,16 @@ class Leg(Part):
                 return self.skill_state
 
         if self.skill_state == "pick":
-            self.skill_guidance_point_robot = self._compute_skill_pick_target(
+            self.skill_target_ee_pose_robot = self._compute_skill_pick_pose_target(
                 ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
                 april_to_robot,
             )
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+            self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            self.skill_target_gripper_width = self.reset_gripper_width
             pinched = False
             leg_force_mag = None
             left_dist = None
@@ -407,6 +470,8 @@ class Leg(Part):
                     assemble_to,
                 )
                 self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+                self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+                self.skill_target_gripper_width = self.half_width * 2
         elif self.skill_state == "place":
             self.skill_target_ee_pose_robot = self._compute_skill_place_target(
                 ee_pose_robot,
@@ -417,6 +482,8 @@ class Leg(Part):
                 assemble_to,
             )
             self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+            self.skill_target_gripper_width = self.half_width * 2
             table_pose_env = C.to_homogeneous(
                 rb_states[part_idxs[assemble_to]][0][:3],
                 C.quat2mat(rb_states[part_idxs[assemble_to]][0][3:7]),
@@ -438,6 +505,17 @@ class Leg(Part):
                 and ori_error < self.skill_place_part_ori_threshold
             ):
                 self.skill_state = "insert"
+                self.skill_target_ee_pose_robot = self._compute_skill_place_target(
+                    ee_pose_robot,
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                    assemble_to,
+                )
+                self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+                self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+                self.skill_target_gripper_width = self.half_width * 2
         elif self.skill_state == "insert":
             self.skill_target_ee_pose_robot = self._compute_skill_place_target(
                 ee_pose_robot,
@@ -448,21 +526,43 @@ class Leg(Part):
                 assemble_to,
             )
             self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+            self.skill_target_gripper_width = self.half_width * 2
             if gripper_width >= config["robot"]["max_gripper_width"]["square_table"] - 0.001:
                 self.skill_state = "screw"
+                self.skill_target_ee_pose_robot = self._compute_skill_screw_pose_target(
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                    assemble_to,
+                )
+                self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
                 self.skill_guidance_point_robot = self._compute_skill_screw_target(
                     rb_states,
                     part_idxs,
                     sim_to_april_mat,
                     april_to_robot,
+                    assemble_to,
                 )
+                self.skill_target_gripper_width = self.reset_gripper_width
         elif self.skill_state == "screw":
+            self.skill_target_ee_pose_robot = self._compute_skill_screw_pose_target(
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
             self.skill_guidance_point_robot = self._compute_skill_screw_target(
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
                 april_to_robot,
+                assemble_to,
             )
+            self.skill_target_gripper_width = self.reset_gripper_width
             if assembled:
                 self.skill_state = "done"
 

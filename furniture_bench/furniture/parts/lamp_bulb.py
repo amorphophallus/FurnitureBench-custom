@@ -120,6 +120,12 @@ class LampBulb(Leg):
             assemble_to,
         )
 
+    def _compute_skill_place_guidance_orientation(self, device):
+        return torch.tensor(
+            get_mat([0, 0, 0], [np.pi / 2, 0, np.pi / 4]),
+            device=device,
+        ).float()[:3, :3]
+
     def _is_held(
         self,
         gripper_width,
@@ -229,13 +235,16 @@ class LampBulb(Leg):
                 return self.skill_state
 
         if self.skill_state == "pick":
-            self.skill_guidance_point_robot = super()._compute_skill_pick_target(
+            self.skill_target_ee_pose_robot = self._compute_skill_pick_pose_target(
                 ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
                 april_to_robot,
             )
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+            self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            self.skill_target_gripper_width = self.half_width * 2
             pinched = False
             left_dist = None
             right_dist = None
@@ -279,6 +288,8 @@ class LampBulb(Leg):
                     assemble_to,
                 )
                 self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+                self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+                self.skill_target_gripper_width = self.half_width * 2
         elif self.skill_state == "place":
             self.skill_target_ee_pose_robot = self._compute_skill_place_target(
                 ee_pose_robot,
@@ -289,6 +300,8 @@ class LampBulb(Leg):
                 assemble_to,
             )
             self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+            self.skill_target_gripper_width = self.half_width * 2
             base_pose_robot = self._part_pose_robot(
                 assemble_to, rb_states, part_idxs, sim_to_april_mat, april_to_robot
             )
@@ -316,8 +329,18 @@ class LampBulb(Leg):
                 assemble_to,
             )
             self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+            self.skill_target_gripper_width = self.half_width * 2
             if gripper_width >= config["robot"]["max_gripper_width"]["lamp"] - 0.001:
                 self.skill_state = "screw"
+                self.skill_target_ee_pose_robot = self._compute_skill_screw_pose_target(
+                    rb_states,
+                    part_idxs,
+                    sim_to_april_mat,
+                    april_to_robot,
+                    assemble_to,
+                )
+                self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
                 self.skill_guidance_point_robot = self._compute_skill_screw_target(
                     rb_states,
                     part_idxs,
@@ -325,7 +348,16 @@ class LampBulb(Leg):
                     april_to_robot,
                     assemble_to,
                 )
+                self.skill_target_gripper_width = self.reset_gripper_width
         elif self.skill_state == "screw":
+            self.skill_target_ee_pose_robot = self._compute_skill_screw_pose_target(
+                rb_states,
+                part_idxs,
+                sim_to_april_mat,
+                april_to_robot,
+                assemble_to,
+            )
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
             self.skill_guidance_point_robot = self._compute_skill_screw_target(
                 rb_states,
                 part_idxs,
@@ -333,6 +365,7 @@ class LampBulb(Leg):
                 april_to_robot,
                 assemble_to,
             )
+            self.skill_target_gripper_width = self.reset_gripper_width
             if assembled:
                 self.skill_state = "done"
 

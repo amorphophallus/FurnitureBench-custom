@@ -32,6 +32,7 @@ class TableTop(Part):
     def reset_skill_state(self):
         self.skill_state = "pick"
         self.skill_target = None
+        self.skill_guidance_pose_robot = None
         self.skill_guidance_point = None
         self.skill_pinched_steps = 0
 
@@ -132,6 +133,7 @@ class TableTop(Part):
                 sim_to_april_mat,
                 april_to_robot,
             )
+            self.skill_guidance_pose_robot = self.skill_target.clone()
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
             pinched = False
             body_force_mag = None
@@ -176,6 +178,7 @@ class TableTop(Part):
                     sim_to_april_mat,
                     april_to_robot,
                 )
+                self.skill_guidance_pose_robot = self.skill_target.clone()
                 self.skill_guidance_point = self.skill_target[:3, 3].clone()
         elif self.skill_state == "push":
             if self.skill_target is None:
@@ -186,6 +189,7 @@ class TableTop(Part):
                     sim_to_april_mat,
                     april_to_robot,
                 )
+            self.skill_guidance_pose_robot = self.skill_target.clone()
             self.skill_guidance_point = self.skill_target[:3, 3].clone()
             # Check whether the *table* (not the EE) has reached the corner.
             # Compute table center target independently from the EE guidance target.

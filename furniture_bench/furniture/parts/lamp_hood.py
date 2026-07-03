@@ -65,6 +65,8 @@ class LampHood(Part):
         self.skill_target_ee_pose_robot = None
         self.skill_target_part_pose_robot = None
         self.skill_target_anchor_pose_robot = None
+        self.skill_guidance_pose_robot = None
+        self.skill_target_gripper_width = None
         self.skill_guidance_point_robot = None
         self.skill_pinched_steps = 0
         self.skill_place_pos_threshold = 0.04
@@ -78,6 +80,27 @@ class LampHood(Part):
 
     def get_guidance_point(self):
         return self.skill_guidance_point_robot
+
+    def _compute_skill_pick_pose_target(
+        self,
+        ee_pose_robot,
+        rb_states,
+        part_idxs,
+        sim_to_april_mat,
+        april_to_robot,
+    ):
+        device = ee_pose_robot.device
+        target_pos_robot = self._compute_skill_pick_target(
+            ee_pose_robot,
+            rb_states,
+            part_idxs,
+            sim_to_april_mat,
+            april_to_robot,
+        )
+        target_ori_robot = torch.tensor(
+            rot_mat([np.pi, 0, 0], hom=True), device=device
+        ).float()[:3, :3]
+        return C.to_homogeneous(target_pos_robot, target_ori_robot)
 
     def _part_pose_env(self, part_name, rb_states, part_idxs):
         return C.to_homogeneous(
@@ -151,6 +174,13 @@ class LampHood(Part):
         self.skill_target_part_pose_robot = target_hood_pose_robot.clone()
         self.skill_target_anchor_pose_robot = base_pose_robot.clone()
         return target_ee_pose_robot
+
+    def _compute_skill_place_guidance_pose(self, target_point_robot, device):
+        target_ori_robot = torch.tensor(
+            rot_mat([np.pi, 0, 0], hom=True),
+            device=device,
+        ).float()[:3, :3]
+        return C.to_homogeneous(target_point_robot, target_ori_robot)
 
     def _is_held(
         self,
@@ -265,13 +295,16 @@ class LampHood(Part):
                 return self.skill_state
 
         if self.skill_state == "pick":
-            self.skill_guidance_point_robot = self._compute_skill_pick_target(
+            self.skill_target_ee_pose_robot = self._compute_skill_pick_pose_target(
                 ee_pose_robot,
                 rb_states,
                 part_idxs,
                 sim_to_april_mat,
                 april_to_robot,
             )
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+            self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            self.skill_target_gripper_width = self.hood_grip_width
             pinched = False
             narrow_gripper = gripper_width < config["robot"]["max_gripper_width"]["lamp"] * 0.8
             if part_force is not None:
@@ -297,6 +330,8 @@ class LampHood(Part):
                     assemble_to,
                 )
                 self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+                self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+                self.skill_target_gripper_width = self.hood_grip_width
         elif self.skill_state == "place":
             self.skill_target_ee_pose_robot = self._compute_skill_place_target(
                 ee_pose_robot,
@@ -307,6 +342,8 @@ class LampHood(Part):
                 assemble_to,
             )
             self.skill_guidance_point_robot = self.skill_target_ee_pose_robot[:3, 3].clone()
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+            self.skill_target_gripper_width = self.hood_grip_width
             base_pose_robot = self._part_pose_robot(
                 assemble_to, rb_states, part_idxs, sim_to_april_mat, april_to_robot
             )

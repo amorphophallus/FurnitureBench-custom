@@ -205,6 +205,17 @@ class Part(ABC):
                 return True
         return False
 
+    def get_guidance_point(self):
+        return None
+
+    def get_guidance_pose(self):
+        return getattr(self, "skill_guidance_pose_robot", None)
+
+    def get_guidance_gripper_width(self):
+        if hasattr(self, "skill_target_gripper_width"):
+            return getattr(self, "skill_target_gripper_width")
+        return getattr(self, "reset_gripper_width", None)
+
     def satisfy(
         self,
         current,

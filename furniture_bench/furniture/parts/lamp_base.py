@@ -59,6 +59,8 @@ class LampBase(Part):
     def reset_skill_state(self):
         self.skill_state = "push"
         self.skill_target_ee_pose_robot = None
+        self.skill_guidance_pose_robot = None
+        self.skill_target_gripper_width = None
         self.skill_guidance_point_robot = None
 
     def get_skill_label(self):
@@ -92,10 +94,46 @@ class LampBase(Part):
         target_pos = april_to_robot @ sim_to_april_mat @ target_pos
         target_pos[0] -= self.half_length * 2 + 0.02
         target_pos[1] -= self.half_length + 0.02
-        target_pos[2] = ee_pose[2, 3]
-        target_pos = target_pos[:3]
-        target_ori = ee_pose[:3, :3]
-        return C.to_homogeneous(target_pos, target_ori)
+
+        base_pose = C.to_homogeneous(
+            rb_states[part_idxs[self.name]][0][:3],
+            C.quat2mat(rb_states[part_idxs[self.name]][0][3:7]),
+        )
+        base_pose = sim_to_april_mat @ base_pose
+        base_pos_robot = (april_to_robot @ base_pose)[:3, 3]
+
+        guidance_pos = base_pos_robot.clone()
+        guidance_pos[:2] = target_pos[:2]
+
+        push_dir = guidance_pos - base_pos_robot
+        push_dir[2] = 0.0
+        push_dir_norm = torch.linalg.norm(push_dir)
+
+        if push_dir_norm < 1e-6:
+            grasp_axis = ee_pose[:3, 0].clone()
+            grasp_axis[2] = 0.0
+            grasp_axis_norm = torch.linalg.norm(grasp_axis)
+            if grasp_axis_norm < 1e-6:
+                grasp_axis = torch.tensor([1.0, 0.0, 0.0], device=device)
+            else:
+                grasp_axis = grasp_axis / grasp_axis_norm
+        else:
+            push_dir = push_dir / push_dir_norm
+            grasp_axis = torch.stack(
+                [-push_dir[1], push_dir[0], torch.tensor(0.0, device=device)]
+            )
+            current_grasp_axis = ee_pose[:3, 0].clone()
+            current_grasp_axis[2] = 0.0
+            current_grasp_axis_norm = torch.linalg.norm(current_grasp_axis)
+            if current_grasp_axis_norm >= 1e-6:
+                current_grasp_axis = current_grasp_axis / current_grasp_axis_norm
+                if torch.dot(grasp_axis, current_grasp_axis) < 0:
+                    grasp_axis = -grasp_axis
+
+        down_axis = torch.tensor([0.0, 0.0, -1.0], device=device)
+        height_axis = torch.cross(down_axis, grasp_axis, dim=0)
+        target_ori = torch.stack([grasp_axis, height_axis, down_axis], dim=1)
+        return C.to_homogeneous(guidance_pos, target_ori)
 
     def _compute_skill_push_guidance_point(
         self,
@@ -143,6 +181,8 @@ class LampBase(Part):
                 sim_to_april_mat,
                 april_to_robot,
             )
+            self.skill_guidance_pose_robot = self.skill_target_ee_pose_robot.clone()
+            self.skill_target_gripper_width = self.base_grip_width
             self.skill_guidance_point_robot = self._compute_skill_push_guidance_point(
                 ee_pose,
                 rb_states,
