@@ -18,7 +18,6 @@ from furniture_bench.utils.pose import (
 )
 from furniture_bench.config import config
 from furniture_bench.furniture.parts.part import Part
-from furniture_bench.utils.detection import detection_loop
 from furniture_bench.furniture.parts.obstacle_front import ObstacleFront
 from furniture_bench.furniture.parts.obstacle_right import ObstacleRight
 from furniture_bench.furniture.parts.obstacle_left import ObstacleLeft
@@ -212,6 +211,12 @@ class Furniture(ABC):
             return T.pose2mat(part_pose)
 
     def start_detection(self):
+        # Import the RealSense-backed detector only when live detection is
+        # requested.  Offline consumers (for example pickle annotation) only
+        # need the furniture geometry and should not require camera hardware
+        # merely to instantiate a Furniture object.
+        from furniture_bench.utils.detection import detection_loop
+
         self.ctx = mp.get_context("spawn")
 
         if self.detection_started:
