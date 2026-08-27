@@ -1110,6 +1110,9 @@ class FurnitureSimEnv(gym.Env):
         for q in ee_quat:
             if q[3] < 0:
                 q *= -1
+        ee_pose = self._batched_pose_matrix(ee_pos, ee_quat)
+        ee_pos_sim, ee_quat_sim = self.get_ee_pose_sim_local()
+        ee_pose_sim = self._batched_pose_matrix(ee_pos_sim, ee_quat_sim)
         ee_pos_vel = self.rb_states[self.ee_idxs, 7:10]
         ee_ori_vel = self.rb_states[self.ee_idxs, 10:]
         gripper_width = self.gripper_width()
@@ -1120,6 +1123,16 @@ class FurnitureSimEnv(gym.Env):
             "joint_torques": joint_torques,
             "ee_pos": ee_pos,
             "ee_quat": ee_quat,
+            "ee_pose": ee_pose,
+            # Preserve the pre-alignment sim-local representation for old
+            # checkpoints.  New policies always consume the canonical fields
+            # above, expressed in the robot-base frame.
+            "ee_pos_sim": ee_pos_sim,
+            "ee_quat_sim": ee_quat_sim,
+            "ee_pose_sim": ee_pose_sim,
+            "ee_pos_original": ee_pos_sim,
+            "ee_quat_original": ee_quat_sim,
+            "ee_pose_original": ee_pose_sim,
             "ee_pos_vel": ee_pos_vel,
             "ee_ori_vel": ee_ori_vel,
             "gripper_width": gripper_width,
@@ -1183,6 +1196,31 @@ class FurnitureSimEnv(gym.Env):
         base_pos = self.rb_states[self.base_idxs, :3]
         base_quat = self.rb_states[self.base_idxs, 3:7]  # Align with world coordinate.
         return hand_pos - base_pos, hand_quat
+
+    @staticmethod
+    def _batched_pose_matrix(pos, quat):
+        pose = torch.zeros(
+            (*pos.shape[:-1], 4, 4),
+            dtype=pos.dtype,
+            device=pos.device,
+        )
+        pose[..., :3, :3] = C.quat2mat_batched(quat)
+        pose[..., :3, 3] = pos
+        pose[..., 3, 3] = 1.0
+        return pose
+
+    def get_ee_pose_sim_local(self):
+        """Gets the legacy EE pose in each Isaac Gym environment's local frame."""
+        ee_pos_global = self.rb_states[self.ee_idxs, :3]
+        ee_quat_global = self.rb_states[self.ee_idxs, 3:7]
+        base_pos_global = self.rb_states[self.base_idxs, :3]
+        franka_origin = torch.as_tensor(
+            np.asarray(self.franka_from_origin_mat, dtype=np.float32)[:3, 3],
+            device=ee_pos_global.device,
+            dtype=ee_pos_global.dtype,
+        )
+        env_offset = base_pos_global - franka_origin
+        return ee_pos_global - env_offset, ee_quat_global
 
     def gripper_width(self):
         return self.dof_pos[:, 7:8] + self.dof_pos[:, 8:9]

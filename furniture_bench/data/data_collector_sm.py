@@ -734,6 +734,10 @@ class DataCollectorSpaceMouse:
             data["skills"] = self.skills
             data["success"] = True if collect_enum == CollectEnum.SUCCESS else False
             data["furniture"] = self.furniture
+            if self.is_sim:
+                data["eepose_frame"] = "robot-base"
+                data["eepose_original_frame"] = "sim-local"
+                data["eepose_schema_version"] = 2
 
             if "error" in info:
                 data["error_description"] = info["error"].value
