@@ -82,6 +82,26 @@ config: Dict[str, Any] = {
         "depth_img_size": (1280, 720),
         "resized_img_size": (224, 224),
         "frame_rate": 30,
+        # Keep camera geometry as named presets so the locked candidate can be
+        # compared with the original simulator view without overwriting it.
+        "sim_front_camera_preset": "locked_20260910",
+        "sim_front_camera_presets": {
+            "original": {
+                "position": (0.90, -0.00, 0.65),
+                "target": (-1.0, -0.00, 0.30),
+                "horizontal_fov": 69.4,
+            },
+            "locked_20260910": {
+                # Previous candidate + 5 mm along -base-tag-x.
+                "position": (0.66412361, 0.02852087, 0.70789541),
+                "target": (
+                    -0.23274588365035298,
+                    0.017169112227927445,
+                    0.2657458324192411,
+                ),
+                "horizontal_fov": 66.0,
+            },
+        },
     },
     "furniture": {
         "detection_hz": 30,

@@ -153,6 +153,30 @@ class FurnitureSimEnv(gym.Env):
         self.img_size = sim_config["camera"][
             "resized_img_size" if resize_img else "color_img_size"
         ]
+        camera_config = sim_config["camera"]
+        self.sim_front_camera_preset = kwargs.get("sim_front_camera_preset")
+        if self.sim_front_camera_preset is None:
+            self.sim_front_camera_preset = camera_config.get(
+                "sim_front_camera_preset", "original"
+            )
+        camera_presets = camera_config.get("sim_front_camera_presets", {})
+        if self.sim_front_camera_preset not in camera_presets:
+            raise ValueError(
+                f"unknown sim front camera preset "
+                f"{self.sim_front_camera_preset!r}; expected one of "
+                f"{sorted(camera_presets)}"
+            )
+        sim_front_camera = camera_presets[self.sim_front_camera_preset]
+        self.sim_front_position = np.asarray(
+            sim_front_camera["position"], dtype=np.float64
+        )
+        self.sim_front_target = np.asarray(
+            sim_front_camera["target"], dtype=np.float64
+        )
+        self.sim_front_horizontal_fov = kwargs.get(
+            "sim_front_horizontal_fov",
+            sim_front_camera["horizontal_fov"],
+        )
 
         # Simulator setup.
         self.isaac_gym = gymapi.acquire_gym()
@@ -593,7 +617,9 @@ class FurnitureSimEnv(gym.Env):
             camera_cfg.height = self.img_size[1]
             camera_cfg.near_plane = 0.001
             camera_cfg.far_plane = 2.0
-            camera_cfg.horizontal_fov = 40.0 if self.resize_img else 69.4
+            camera_cfg.horizontal_fov = (
+                40.0 if self.resize_img else float(self.sim_front_horizontal_fov)
+            )
             self.camera_cfg = camera_cfg
 
             if name == "wrist":
@@ -610,8 +636,8 @@ class FurnitureSimEnv(gym.Env):
                 )
             elif name == "front":
                 camera = self.isaac_gym.create_camera_sensor(env, camera_cfg)
-                cam_pos = gymapi.Vec3(0.90, -0.00, 0.65)
-                cam_target = gymapi.Vec3(-1, -0.00, 0.3)
+                cam_pos = gymapi.Vec3(*self.sim_front_position.tolist())
+                cam_target = gymapi.Vec3(*self.sim_front_target.tolist())
                 self.isaac_gym.set_camera_location(camera, env, cam_pos, cam_target)
                 self.front_cam_pos = np.array([cam_pos.x, cam_pos.y, cam_pos.z])
                 self.front_cam_target = np.array(
