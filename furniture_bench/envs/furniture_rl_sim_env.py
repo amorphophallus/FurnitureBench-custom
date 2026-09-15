@@ -77,6 +77,7 @@ class FurnitureSimEnv(gym.Env):
         ee_laser: bool = False,
         april_tags=False,
         parts_poses_in_robot_frame=False,
+        depth_positive_meters: bool = False,
         **kwargs,
     ):
         """
@@ -158,6 +159,7 @@ class FurnitureSimEnv(gym.Env):
         self.manual_done = manual_done
         self.headless = headless
         self.channel_first = channel_first
+        self.depth_positive_meters = bool(depth_positive_meters)
         self.img_size = sim_config["camera"][
             "resized_img_size" if resize_img else "color_img_size"
         ]
@@ -1398,6 +1400,8 @@ class FurnitureSimEnv(gym.Env):
     
     def _get_depth_obs(self, depth_obs):
         depth_obs = torch.stack(depth_obs)
+        if self.depth_positive_meters:
+            depth_obs = depth_obs.abs()
         return depth_obs
 
     def get_front_projection_view_matrix(self):
@@ -1548,6 +1552,18 @@ class FurnitureSimEnv(gym.Env):
 
         if self.randomness == Randomness.MEDIUM:
             furniture.randomize_init_pose(self.from_skill)
+        elif self.randomness == Randomness.LOWMED125:
+            furniture.randomize_init_pose(
+                self.from_skill, pos_range=[-0.019375, 0.019375], rot_range=18.75
+            )
+        elif self.randomness == Randomness.LOWMED25:
+            furniture.randomize_init_pose(
+                self.from_skill, pos_range=[-0.02375, 0.02375], rot_range=22.5
+            )
+        elif self.randomness == Randomness.MID:
+            furniture.randomize_init_pose(
+                self.from_skill, pos_range=[-0.0325, 0.0325], rot_range=30
+            )
         elif self.randomness == Randomness.HIGH:
             furniture.randomize_high(self.high_random_idx)
 
@@ -1918,11 +1934,26 @@ class FurnitureRLSimEnv(FurnitureSimEnv):
             self.max_torque_magnitude = 0.007
             self.max_obstacle_offset = 0.02
             self.franka_joint_rand_lim_deg = np.radians(5)
+        elif self.randomness == Randomness.LOWMED125:
+            self.max_force_magnitude = 0.2375
+            self.max_torque_magnitude = 0.007375
+            self.max_obstacle_offset = 0.0225
+            self.franka_joint_rand_lim_deg = np.radians(5.625)
         elif self.randomness == Randomness.MEDIUM:
             self.max_force_magnitude = 0.5
             self.max_torque_magnitude = 0.01
             self.max_obstacle_offset = 0.04
             self.franka_joint_rand_lim_deg = np.radians(10)
+        elif self.randomness == Randomness.LOWMED25:
+            self.max_force_magnitude = 0.275
+            self.max_torque_magnitude = 0.00775
+            self.max_obstacle_offset = 0.025
+            self.franka_joint_rand_lim_deg = np.radians(6.25)
+        elif self.randomness == Randomness.MID:
+            self.max_force_magnitude = 0.35
+            self.max_torque_magnitude = 0.0085
+            self.max_obstacle_offset = 0.03
+            self.franka_joint_rand_lim_deg = np.radians(7.5)
         elif self.randomness == Randomness.HIGH:
             self.max_force_magnitude = 0.75
             self.max_torque_magnitude = 0.015

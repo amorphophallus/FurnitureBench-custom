@@ -76,6 +76,7 @@ class FurnitureSimEnv(gym.Env):
         action_type: str = "delta",  # "delta" or "pos"
         ctrl_mode: str = "osc",
         ee_laser: bool = False,
+        depth_positive_meters: bool = False,
         **kwargs,
     ):
         """
@@ -140,6 +141,7 @@ class FurnitureSimEnv(gym.Env):
         self.init_assembled = init_assembled
         self.np_step_out = np_step_out
         self.channel_first = channel_first
+        self.depth_positive_meters = bool(depth_positive_meters)
         self.from_skill = (
             0  # TODO: Skill benchmark should be implemented in FurnitureSim.
         )
@@ -1357,6 +1359,8 @@ class FurnitureSimEnv(gym.Env):
         depth_obs = {
             k: torch.stack(v) for k, v in self.camera_obs.items() if "depth" in k
         }
+        if self.depth_positive_meters:
+            depth_obs = {k: v.abs() for k, v in depth_obs.items()}
 
         if self.np_step_out:
             robot_state = {k: v.cpu().numpy() for k, v in robot_state.items()}
@@ -1480,6 +1484,18 @@ class FurnitureSimEnv(gym.Env):
 
         if self.randomness == Randomness.MEDIUM:
             self.furnitures[env_idx].randomize_init_pose(self.from_skill)
+        elif self.randomness == Randomness.LOWMED125:
+            self.furnitures[env_idx].randomize_init_pose(
+                self.from_skill, pos_range=[-0.019375, 0.019375], rot_range=18.75
+            )
+        elif self.randomness == Randomness.LOWMED25:
+            self.furnitures[env_idx].randomize_init_pose(
+                self.from_skill, pos_range=[-0.02375, 0.02375], rot_range=22.5
+            )
+        elif self.randomness == Randomness.MID:
+            self.furnitures[env_idx].randomize_init_pose(
+                self.from_skill, pos_range=[-0.0325, 0.0325], rot_range=30
+            )
         elif self.randomness == Randomness.HIGH:
             self.furnitures[env_idx].randomize_high(self.high_random_idx)
 

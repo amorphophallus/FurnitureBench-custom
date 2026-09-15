@@ -11,6 +11,9 @@ class Randomness(Enum):
     HIGH_COLLECT = 4
     SKILL_FIXED = 5
     SKILL_RANDOM = 6
+    MID = 7
+    LOWMED25 = 8
+    LOWMED125 = 9
 
     @staticmethod
     def str_to_enum(v):
@@ -22,6 +25,12 @@ def str_to_enum(v):
         return v
     if v == "low":
         return Randomness.LOW
+    elif v in ("lowmed25", "quarter"):
+        return Randomness.LOWMED25
+    elif v in ("lowmed125", "eighth"):
+        return Randomness.LOWMED125
+    elif v == "mid":
+        return Randomness.MID
     elif v == "med":
         return Randomness.MEDIUM
     elif v == "high":
